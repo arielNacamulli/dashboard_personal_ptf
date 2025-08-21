@@ -12,7 +12,10 @@ ETF_SYMBOLS = {
     'SJPA.MI': 'iShares Core MSCI Japan',
     'IS3K.DE': 'iShares Short Duration High Yield',
     'AEME.PA': 'Amundi Index MSCI Emerging Markets',
-    'XEON.MI': 'Xtrackers II EUR Overnight Rate Swap'
+        'SGLD.MI': 'Invesco Physical Gold',
+    '21BC.DE': '21Shares Bitcoin ETP',
+    'XEON.MI': 'Xtrackers II EUR Overnight Rate Swap',
+
 }
 
 # Asset monetario di base (non da ottimizzare)
@@ -43,6 +46,8 @@ ETF_INFO = {
         'Azionario Giappone',
         'Obbligazionario High Yield',
         'Azionario Emerging Markets',
+        'Materie Prime',
+        'Criptovalute',
         'Base Monetaria (Cash)'
     ]
 }

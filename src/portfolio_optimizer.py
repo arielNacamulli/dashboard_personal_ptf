@@ -750,6 +750,7 @@ class PortfolioOptimizer:
     def create_benchmark_portfolio(self, returns: pd.DataFrame) -> pd.DataFrame:
         """
         Crea un portfolio benchmark basato su SWDA + XEON
+        Utilizza lo stesso approccio di liquidità del portafoglio principale
         
         Args:
             returns: DataFrame con i rendimenti degli asset
@@ -765,23 +766,65 @@ class PortfolioOptimizer:
             logger.warning(f"Asset mancanti per benchmark: {cash_asset} o {swda_symbol}")
             return pd.DataFrame()
         
-        # Crea pesi benchmark: cash target + resto in SWDA
-        benchmark_weights = pd.Series(0.0, index=returns.columns)
-        benchmark_weights[cash_asset] = self.cash_target
-        benchmark_weights[swda_symbol] = 1.0 - self.cash_target
+        if self.use_volatility_target:
+            # Usa volatilità target per il benchmark - calcola come il portfolio principale
+            print(f"📊 Benchmark con volatilità target: {self.target_volatility*100:.1f}%")
+            
+            from src.config import VOLATILITY_LOOKBACK_DAYS
+            min_window = VOLATILITY_LOOKBACK_DAYS
+            
+            benchmark_returns_list = []
+            benchmark_dates = []
+            
+            for i, current_date in enumerate(returns.index):
+                if i < min_window:
+                    # Usa cash fisso per i primi giorni (come fallback)
+                    cash_weight = self.cash_target
+                else:
+                    # Crea pesi benchmark temporanei per calcolo volatilità
+                    temp_weights = pd.Series(0.0, index=returns.columns)
+                    temp_weights[swda_symbol] = 1.0  # 100% SWDA temporaneamente
+                    
+                    # Calcola peso cash usando la stessa logica del portfolio
+                    cash_weight = self.calculate_target_cash_weight(
+                        returns.iloc[:i],  # Dati fino alla data corrente 
+                        temp_weights.drop(cash_asset, errors='ignore'),  # Solo SWDA
+                        current_date
+                    )
+                
+                # Calcola rendimento del giorno
+                swda_weight = 1.0 - cash_weight
+                daily_return = (cash_weight * returns[cash_asset].iloc[i] + 
+                              swda_weight * returns[swda_symbol].iloc[i])
+                
+                benchmark_returns_list.append(daily_return)
+                benchmark_dates.append(current_date)
         
-        # Calcola rendimenti benchmark
-        benchmark_returns = (returns * benchmark_weights).sum(axis=1)
+        else:
+            # Usa cash fisso per il benchmark
+            print(f"📊 Benchmark con cash fisso: {self.cash_target*100:.1f}%")
+            benchmark_weights = pd.Series(0.0, index=returns.columns)
+            benchmark_weights[cash_asset] = self.cash_target
+            benchmark_weights[swda_symbol] = 1.0 - self.cash_target
+            
+            # Calcola rendimenti benchmark
+            benchmark_returns_series = (returns * benchmark_weights).sum(axis=1)
+            benchmark_returns_list = benchmark_returns_series.tolist()
+            benchmark_dates = returns.index.tolist()
+        
+        # Crea DataFrame risultato
+        benchmark_returns_series = pd.Series(benchmark_returns_list, index=benchmark_dates)
         
         return pd.DataFrame({
-            'benchmark_returns': benchmark_returns,
-            'cumulative_returns': np.cumprod(1 + benchmark_returns) - 1
-        }, index=returns.index)
+            'benchmark_returns': benchmark_returns_series,
+            'cumulative_returns': np.cumprod(1 + benchmark_returns_series) - 1
+        }, index=benchmark_dates)
     
     def backtest_with_benchmark(self, returns: pd.DataFrame, method: str = 'herc', 
                                rebalance_freq: str = 'M') -> dict:
         """
         Esegue il backtest del portafoglio includendo il benchmark
+        Il benchmark utilizza lo stesso approccio di liquidità (cash fisso o volatilità target)
         
         Args:
             returns: DataFrame con i rendimenti
@@ -806,19 +849,36 @@ class PortfolioOptimizer:
                 portfolio_aligned = portfolio_results.loc[common_dates]
                 benchmark_aligned = benchmark_results.loc[common_dates]
                 
+                # Determina i pesi del benchmark in base alla modalità
+                if self.use_volatility_target:
+                    benchmark_weights_info = {
+                        'approach': 'volatility_target',
+                        'target_volatility': self.target_volatility,
+                        'SWDA.MI': f'Variabile (target vol {self.target_volatility*100:.1f}%)',
+                        get_cash_asset(): f'Variabile (target vol {self.target_volatility*100:.1f}%)'
+                    }
+                else:
+                    benchmark_weights_info = {
+                        'approach': 'fixed_cash',
+                        'cash_target': self.cash_target,
+                        'SWDA.MI': 1.0 - self.cash_target,
+                        get_cash_asset(): self.cash_target
+                    }
+                
                 return {
                     'portfolio': portfolio_aligned,
                     'benchmark': benchmark_aligned,
                     'portfolio_weights': self.weights_history,
-                    'benchmark_weights': {
-                        'SWDA.MI': 1.0 - self.cash_target,
-                        get_cash_asset(): self.cash_target
-                    }
+                    'benchmark_weights': benchmark_weights_info,
+                    'use_volatility_target': self.use_volatility_target,
+                    'target_volatility': self.target_volatility if self.use_volatility_target else None
                 }
         
         return {
             'portfolio': portfolio_results,
             'benchmark': pd.DataFrame(),
             'portfolio_weights': self.weights_history,
-            'benchmark_weights': {}
+            'benchmark_weights': {},
+            'use_volatility_target': self.use_volatility_target,
+            'target_volatility': self.target_volatility if self.use_volatility_target else None
         }

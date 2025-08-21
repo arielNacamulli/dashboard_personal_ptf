@@ -341,11 +341,22 @@ def main():
                         
                         # Linea del benchmark (se disponibile)
                         if not benchmark_data.empty:
+                            # Determina l'etichetta del benchmark basata sulla modalità
+                            benchmark_weights_dict = results.get('benchmark_weights', {})
+                            use_vol_target = benchmark_weights_dict.get('approach') == 'volatility_target'
+                            
+                            if use_vol_target:
+                                target_vol = benchmark_weights_dict.get('target_volatility', 0) * 100
+                                benchmark_label = f'Benchmark Vol Target {target_vol:.1f}%'
+                            else:
+                                cash_pct = benchmark_weights_dict.get('cash_target', cash_target) * 100
+                                benchmark_label = f'Benchmark Cash {cash_pct:.0f}%'
+                            
                             fig_performance.add_trace(go.Scatter(
                                 x=benchmark_data.index,
                                 y=benchmark_data['cumulative_returns'] * 100,
                                 mode='lines',
-                                name='Benchmark (SWDA + XEON)',
+                                name=benchmark_label,
                                 line=dict(color='#F24236', width=2, dash='dash')
                             ))
                         
@@ -384,6 +395,17 @@ def main():
                                 "Rendimento Totale",
                                 format_percentage(portfolio_return),
                                 delta=format_percentage(excess_return)
+                            )
+                            
+                            # Rendimento Annualizzato 
+                            portfolio_ann_return = portfolio_metrics.get('Annualized Return', 0)
+                            benchmark_ann_return = benchmark_metrics.get('Annualized Return', 0)
+                            ann_excess_return = portfolio_ann_return - benchmark_ann_return
+                            
+                            st.metric(
+                                "Rendimento Annualizzato",
+                                format_percentage(portfolio_ann_return),
+                                delta=format_percentage(ann_excess_return)
                             )
                             
                             portfolio_sharpe = portfolio_metrics.get('Sharpe Ratio', 0)
@@ -581,7 +603,7 @@ def main():
                     st.write("**Riassunto Allocazione:**")
                     
                     # Verifica validità rispetto allo spazio disponibile
-                    if total_manual > available_for_investment:
+                    if total_manual > available_for_investment + 1e-6:
                         st.error(f"⚠️ Attenzione: Gli investimenti superano lo spazio disponibile ({total_manual*100:.1f}% > {available_for_investment*100:.1f}%)")
                         st.write("I pesi verranno normalizzati automaticamente.")
                     elif total_manual < available_for_investment * 0.80:  # Se usa meno dell'80% dello spazio
@@ -755,13 +777,43 @@ def main():
                             # Pesi del benchmark
                             benchmark_weights_dict = st.session_state.portfolio_results.get('benchmark_weights', {})
                             if benchmark_weights_dict:
-                                # Converti il dizionario in pandas Series
-                                benchmark_weights = pd.Series(benchmark_weights_dict)
+                                # Determina se stiamo usando volatilità target
+                                use_vol_target = benchmark_weights_dict.get('approach') == 'volatility_target'
                                 
-                                benchmark_df = pd.DataFrame({
-                                    'Asset': benchmark_weights.index,
-                                    'Peso (%)': (benchmark_weights.values * 100).round(2)
-                                })
+                                if use_vol_target:
+                                    # Modalità volatilità target - mostra info dinamica
+                                    target_vol = benchmark_weights_dict.get('target_volatility', 0) * 100
+                                    st.info(f"🎯 **Benchmark con Volatilità Target: {target_vol:.1f}%**")
+                                    st.write("📊 **Pesi Dinamici (esempio medio):**")
+                                    
+                                    # Mostra i pesi come informazione
+                                    benchmark_df = pd.DataFrame({
+                                        'Asset': ['SWDA.MI', 'XEON.MI'],
+                                        'Composizione': [
+                                            f"Variabile (target vol {target_vol:.1f}%)",
+                                            f"Variabile (target vol {target_vol:.1f}%)"
+                                        ]
+                                    })
+                                else:
+                                    # Modalità cash fisso - mostra pesi fissi
+                                    cash_pct = benchmark_weights_dict.get('cash_target', cash_target) * 100
+                                    st.info(f"💰 **Benchmark con Cash Fisso: {cash_pct:.1f}%**")
+                                    
+                                    # Rimuovi le chiavi di configurazione e mostra solo i pesi
+                                    weight_keys = [k for k in benchmark_weights_dict.keys() 
+                                                 if k not in ['approach', 'cash_target', 'target_volatility']]
+                                    if weight_keys:
+                                        benchmark_weights = pd.Series({k: benchmark_weights_dict[k] for k in weight_keys})
+                                        benchmark_df = pd.DataFrame({
+                                            'Asset': benchmark_weights.index,
+                                            'Peso (%)': (benchmark_weights.values * 100).round(2)
+                                        })
+                                    else:
+                                        benchmark_df = pd.DataFrame({
+                                            'Asset': ['SWDA.MI', 'XEON.MI'],
+                                            'Peso (%)': [100 - cash_pct, cash_pct]
+                                        })
+                                
                                 st.dataframe(benchmark_df, use_container_width=True, hide_index=True)
                             else:
                                 st.info("Nessun peso benchmark disponibile")
@@ -770,12 +822,32 @@ def main():
                             # Grafico a torta del benchmark
                             benchmark_weights_dict = st.session_state.portfolio_results.get('benchmark_weights', {})
                             if benchmark_weights_dict:
-                                # Converti il dizionario in pandas Series per il grafico
-                                benchmark_weights = pd.Series(benchmark_weights_dict)
-                                benchmark_fig = create_weights_pie_chart(
-                                    benchmark_weights, 
-                                    f"Benchmark Portfolio (Cash {cash_target:.0f}%)"
-                                )
+                                use_vol_target = benchmark_weights_dict.get('approach') == 'volatility_target'
+                                
+                                if use_vol_target:
+                                    # Per volatilità target, mostra un grafico indicativo
+                                    target_vol = benchmark_weights_dict.get('target_volatility', 0) * 100
+                                    # Pesi indicativi per il grafico (60% SWDA, 40% XEON come esempio)
+                                    example_weights = pd.Series({'SWDA.MI': 0.6, 'XEON.MI': 0.4})
+                                    benchmark_fig = create_weights_pie_chart(
+                                        example_weights, 
+                                        f"Benchmark (Vol Target {target_vol:.1f}% - Esempio)"
+                                    )
+                                else:
+                                    # Cash fisso - usa i pesi reali
+                                    weight_keys = [k for k in benchmark_weights_dict.keys() 
+                                                 if k not in ['approach', 'cash_target', 'target_volatility']]
+                                    if weight_keys:
+                                        benchmark_weights = pd.Series({k: benchmark_weights_dict[k] for k in weight_keys})
+                                    else:
+                                        cash_pct = benchmark_weights_dict.get('cash_target', cash_target)
+                                        benchmark_weights = pd.Series({'SWDA.MI': 1-cash_pct, 'XEON.MI': cash_pct})
+                                    
+                                    benchmark_fig = create_weights_pie_chart(
+                                        benchmark_weights, 
+                                        f"Benchmark (Cash {cash_target*100:.0f}%)"
+                                    )
+                                
                                 st.plotly_chart(benchmark_fig, use_container_width=True)
                     
                     # Distribuzione dei rendimenti
