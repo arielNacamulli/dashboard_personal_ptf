@@ -8,7 +8,10 @@ from scipy.spatial.distance import squareform
 from sklearn.covariance import LedoitWolf
 from .config import get_cash_asset, get_default_cash_target, get_default_max_exposure, is_exposure_exempt
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+
+logger = logging.getLogger(__name__)
 
 class PortfolioOptimizer:
     """Classe per l'ottimizzazione del portafoglio con algoritmi gerarchici"""
@@ -152,7 +155,8 @@ class PortfolioOptimizer:
     
     def apply_exposure_constraints(self, weights: pd.Series) -> pd.Series:
         """
-        Applica i vincoli di massima esposizione agli ETF
+        Applica i vincoli di massima esposizione agli ETF con algoritmo iterativo robusto
+        Include gestione speciale per SWDA come asset core
         
         Args:
             weights: Serie con i pesi degli asset
@@ -163,31 +167,128 @@ class PortfolioOptimizer:
         cash_asset = get_cash_asset()
         constrained_weights = weights.copy()
         
-        # Applica il vincolo di massima esposizione
-        for asset in constrained_weights.index:
-            if asset != cash_asset and not is_exposure_exempt(asset):
-                if constrained_weights[asset] > self.max_exposure:
-                    constrained_weights[asset] = self.max_exposure
+        # Peso minimo garantito per SWDA (asset core)
+        from src.config import DEFAULT_SWDA_MIN_WEIGHT
+        swda_min_weight = DEFAULT_SWDA_MIN_WEIGHT
         
-        # Normalizza i pesi degli investimenti (escludendo cash)
-        investment_weights = constrained_weights.drop(cash_asset, errors='ignore')
-        investment_sum = investment_weights.sum()
+        # Separa cash dagli altri asset
+        investment_assets = [asset for asset in constrained_weights.index 
+                           if asset != cash_asset]
         
-        if investment_sum > 0:
-            # Calcola lo spazio disponibile per gli investimenti (1 - cash_target)
-            available_for_investment = 1.0 - self.cash_target
+        # Assicura peso minimo per SWDA se presente
+        if 'SWDA.MI' in constrained_weights.index:
+            current_swda_weight = constrained_weights['SWDA.MI']
+            if current_swda_weight < swda_min_weight:
+                print(f"🏆 Applicando peso minimo SWDA: {current_swda_weight:.3f} -> {swda_min_weight:.3f}")
+                
+                # Calcola quanto peso dobbiamo togliere dagli altri asset
+                weight_needed = swda_min_weight - current_swda_weight
+                
+                # Riduci proporzionalmente gli altri asset (escluso cash e SWDA)
+                other_assets = [asset for asset in investment_assets if asset != 'SWDA.MI']
+                total_other_weight = sum(constrained_weights[asset] for asset in other_assets)
+                
+                if total_other_weight > weight_needed:
+                    reduction_factor = (total_other_weight - weight_needed) / total_other_weight
+                    for asset in other_assets:
+                        constrained_weights[asset] *= reduction_factor
+                
+                # Imposta SWDA al peso minimo
+                constrained_weights['SWDA.MI'] = swda_min_weight
+        
+        # Applica vincoli iterativamente
+        max_iterations = 20
+        for iteration in range(max_iterations):
+            total_violation = 0.0
+            violated_assets = []
             
-            # Normalizza i pesi degli investimenti per riempire lo spazio disponibile
-            normalized_investment_weights = investment_weights * (available_for_investment / investment_sum)
+            # Trova violazioni
+            for asset in investment_assets:
+                if not is_exposure_exempt(asset):
+                    if constrained_weights[asset] > self.max_exposure:
+                        violation = constrained_weights[asset] - self.max_exposure
+                        total_violation += violation
+                        violated_assets.append(asset)
+                        # Taglia immediatamente al limite
+                        constrained_weights[asset] = self.max_exposure
             
-            # Aggiorna i pesi
-            for asset in normalized_investment_weights.index:
-                constrained_weights[asset] = normalized_investment_weights[asset]
+            # Se non ci sono violazioni, esci
+            if total_violation < 1e-8:
+                break
+                
+            print(f"Iterazione {iteration + 1}: {len(violated_assets)} asset violati, eccesso totale: {total_violation:.6f}")
+            
+            # Trova asset eligibili per redistribuzione
+            eligible_assets = []
+            total_available_space = 0.0
+            
+            for asset in investment_assets:
+                if not is_exposure_exempt(asset):
+                    available_space = max(0.0, self.max_exposure - constrained_weights[asset])
+                    if available_space > 1e-8:
+                        eligible_assets.append(asset)
+                        total_available_space += available_space
+            
+            # Ridistribuisci il peso in eccesso
+            if eligible_assets and total_available_space > 1e-8:
+                # Ridistribuisci proporzionalmente allo spazio disponibile
+                redistribution_ratio = min(1.0, total_violation / total_available_space)
+                
+                for asset in eligible_assets:
+                    available_space = max(0.0, self.max_exposure - constrained_weights[asset])
+                    additional_weight = available_space * redistribution_ratio
+                    constrained_weights[asset] += additional_weight
+            else:
+                # Se non c'è spazio disponibile, il peso in eccesso va al cash
+                print(f"Peso in eccesso {total_violation:.6f} allocato al cash")
+                break
         
-        # Imposta il cash al target fisso
+        if iteration >= max_iterations - 1:
+            print(f"⚠️ Algoritmo di vincoli ha raggiunto il limite di iterazioni ({max_iterations})")
+        
+        # Calcola spazio investimenti e normalizza
+        investment_sum = sum(constrained_weights[asset] for asset in investment_assets)
+        available_for_investment = 1.0 - self.cash_target
+        
+        if investment_sum > available_for_investment + 1e-6:
+            # Se la somma degli investimenti supera lo spazio disponibile, scala proporzionalmente
+            scale_factor = available_for_investment / investment_sum
+            print(f"Scaling investment weights by {scale_factor:.6f}")
+            
+            for asset in investment_assets:
+                constrained_weights[asset] *= scale_factor
+        
+        # Imposta il cash
         constrained_weights[cash_asset] = self.cash_target
         
+        # Verifica finale
+        self._verify_constraints(constrained_weights, "apply_exposure_constraints")
+        
         return constrained_weights
+    
+    def _verify_constraints(self, weights: pd.Series, context: str = "") -> None:
+        """
+        Verifica che tutti i vincoli siano rispettati
+        
+        Args:
+            weights: Serie con i pesi da verificare
+            context: Stringa per identificare il contesto della verifica
+        """
+        cash_asset = get_cash_asset()
+        violations = []
+        
+        for asset in weights.index:
+            if asset != cash_asset and not is_exposure_exempt(asset):
+                if weights[asset] > self.max_exposure + 1e-6:  # Tolleranza numerica
+                    violations.append(f"{asset}: {weights[asset]:.4f} > {self.max_exposure}")
+        
+        if violations:
+            print(f"⚠️  VINCOLI VIOLATI in {context}:")
+            for violation in violations:
+                print(f"   - {violation}")
+            print(f"   - Somma pesi: {weights.sum():.4f}")
+            print(f"   - Cash: {weights[cash_asset]:.4f}")
+            print()
     
     def hrp_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
@@ -239,8 +340,9 @@ class PortfolioOptimizer:
         for asset in investment_weights.index:
             final_weights[asset] = investment_weights[asset]
         
-        # Applica vincoli di esposizione e cash fisso
-        final_weights = self.apply_exposure_constraints(final_weights)
+        # Il cash verrà impostato successivamente da apply_exposure_constraints
+        if cash_asset in final_weights.index:
+            final_weights[cash_asset] = 0.0
         
         return final_weights
     
@@ -289,8 +391,9 @@ class PortfolioOptimizer:
         for i, asset in enumerate(investment_returns.columns):
             final_weights[asset] = investment_weights[i]
         
-        # Applica vincoli di esposizione e cash fisso
-        final_weights = self.apply_exposure_constraints(final_weights)
+        # Il cash verrà impostato successivamente da apply_exposure_constraints
+        if cash_asset in final_weights.index:
+            final_weights[cash_asset] = 0.0
         
         return final_weights
     
@@ -411,6 +514,12 @@ class PortfolioOptimizer:
                 new_weights = self.herc_optimization(optimization_returns)
             else:
                 new_weights = self.hrp_optimization(optimization_returns)
+            
+            # Applica vincoli di esposizione e cash fisso ad ogni ribilanciamento
+            new_weights = self.apply_exposure_constraints(new_weights)
+            
+            # Verifica aggiuntiva per debug
+            self._verify_constraints(new_weights, f"Backtest {rebalance_date.strftime('%Y-%m-%d')}")
             
             weights_history.append({
                 'date': rebalance_date,
@@ -541,3 +650,79 @@ class PortfolioOptimizer:
             Lista delle date di ribilanciamento
         """
         return [entry['date'] for entry in self.weights_history]
+    
+    def create_benchmark_portfolio(self, returns: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea un portfolio benchmark basato su SWDA + XEON
+        
+        Args:
+            returns: DataFrame con i rendimenti degli asset
+            
+        Returns:
+            DataFrame con i rendimenti del benchmark
+        """
+        cash_asset = get_cash_asset()
+        swda_symbol = 'SWDA.MI'
+        
+        # Verifica che entrambi gli asset siano disponibili
+        if cash_asset not in returns.columns or swda_symbol not in returns.columns:
+            logger.warning(f"Asset mancanti per benchmark: {cash_asset} o {swda_symbol}")
+            return pd.DataFrame()
+        
+        # Crea pesi benchmark: cash target + resto in SWDA
+        benchmark_weights = pd.Series(0.0, index=returns.columns)
+        benchmark_weights[cash_asset] = self.cash_target
+        benchmark_weights[swda_symbol] = 1.0 - self.cash_target
+        
+        # Calcola rendimenti benchmark
+        benchmark_returns = (returns * benchmark_weights).sum(axis=1)
+        
+        return pd.DataFrame({
+            'benchmark_returns': benchmark_returns,
+            'cumulative_returns': np.cumprod(1 + benchmark_returns) - 1
+        }, index=returns.index)
+    
+    def backtest_with_benchmark(self, returns: pd.DataFrame, method: str = 'herc', 
+                               rebalance_freq: str = 'M') -> dict:
+        """
+        Esegue il backtest del portafoglio includendo il benchmark
+        
+        Args:
+            returns: DataFrame con i rendimenti
+            method: Metodo di ottimizzazione ('herc' o 'hrp')
+            rebalance_freq: Frequenza di ribilanciamento
+            
+        Returns:
+            Dizionario con risultati portfolio e benchmark
+        """
+        # Backtest del portfolio principale
+        portfolio_results = self.backtest_portfolio(returns, method, rebalance_freq)
+        
+        # Crea benchmark per lo stesso periodo
+        if not portfolio_results.empty:
+            benchmark_period = returns.loc[portfolio_results.index[0]:portfolio_results.index[-1]]
+            benchmark_results = self.create_benchmark_portfolio(benchmark_period)
+            
+            # Allinea le date
+            common_dates = portfolio_results.index.intersection(benchmark_results.index)
+            
+            if len(common_dates) > 0:
+                portfolio_aligned = portfolio_results.loc[common_dates]
+                benchmark_aligned = benchmark_results.loc[common_dates]
+                
+                return {
+                    'portfolio': portfolio_aligned,
+                    'benchmark': benchmark_aligned,
+                    'portfolio_weights': self.weights_history,
+                    'benchmark_weights': {
+                        'SWDA.MI': 1.0 - self.cash_target,
+                        get_cash_asset(): self.cash_target
+                    }
+                }
+        
+        return {
+            'portfolio': portfolio_results,
+            'benchmark': pd.DataFrame(),
+            'portfolio_weights': self.weights_history,
+            'benchmark_weights': {}
+        }

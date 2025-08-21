@@ -244,8 +244,8 @@ def main():
                             max_exposure=max_exposure
                         )
                         
-                        # Esegui backtest
-                        portfolio_results = optimizer.backtest_portfolio(
+                        # Esegui backtest con benchmark
+                        backtest_results = optimizer.backtest_with_benchmark(
                             st.session_state.returns_data,
                             method=algorithm.lower(),
                             rebalance_freq=rebalance_freq
@@ -256,13 +256,15 @@ def main():
                         
                         # Salva i risultati
                         st.session_state.portfolio_results = {
-                            'backtest': portfolio_results,
+                            'backtest': backtest_results['portfolio'],
+                            'benchmark': backtest_results['benchmark'],
                             'weights_history': optimizer.weights_history,
                             'rebalance_dates': optimizer.get_rebalance_dates(),
                             'algorithm': algorithm,
                             'rebalance_freq': rebalance_freq,
                             'cash_target': cash_target,
-                            'max_exposure': max_exposure
+                            'max_exposure': max_exposure,
+                            'benchmark_weights': backtest_results['benchmark_weights']
                         }
                         st.session_state.current_weights = latest_weights
                         st.session_state.manual_weights = latest_weights  # Inizializza pesi manuali
@@ -284,40 +286,121 @@ def main():
             if st.session_state.portfolio_results:
                 results = st.session_state.portfolio_results
                 
-                # Grafico performance principale
+                # Grafico performance principale con benchmark
                 col1, col2 = st.columns([3, 1])
                 
                 with col1:
                     backtest_data = results['backtest']
+                    benchmark_data = results.get('benchmark', pd.DataFrame())
+                    
                     if not backtest_data.empty:
-                        fig_performance = create_performance_chart(
-                            backtest_data['portfolio_returns'],
-                            title=f"Performance Cumulativa - {results['algorithm']}"
+                        # Crea grafico combinato portfolio + benchmark
+                        fig_performance = go.Figure()
+                        
+                        # Linea del portfolio
+                        fig_performance.add_trace(go.Scatter(
+                            x=backtest_data.index,
+                            y=backtest_data['cumulative_returns'] * 100,
+                            mode='lines',
+                            name=f'{results["algorithm"]} Portfolio',
+                            line=dict(color='#2E86AB', width=2)
+                        ))
+                        
+                        # Linea del benchmark (se disponibile)
+                        if not benchmark_data.empty:
+                            fig_performance.add_trace(go.Scatter(
+                                x=benchmark_data.index,
+                                y=benchmark_data['cumulative_returns'] * 100,
+                                mode='lines',
+                                name='Benchmark (SWDA + XEON)',
+                                line=dict(color='#F24236', width=2, dash='dash')
+                            ))
+                        
+                        fig_performance.update_layout(
+                            title=f"Performance Cumulativa - {results['algorithm']} vs Benchmark",
+                            xaxis_title="Data",
+                            yaxis_title="Rendimento Cumulativo (%)",
+                            template='plotly_white',
+                            hovermode='x unified',
+                            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
                         )
+                        
                         st.plotly_chart(fig_performance, use_container_width=True)
                 
                 with col2:
-                    # Sommario performance
+                    # Sommario performance con confronto benchmark
                     if not backtest_data.empty:
                         metrics_calc = PerformanceMetrics()
                         portfolio_metrics = metrics_calc.calculate_all_metrics(backtest_data['portfolio_returns'])
                         
-                        st.metric(
-                            "Rendimento Totale",
-                            format_percentage(portfolio_metrics.get('Total Return', 0))
-                        )
-                        st.metric(
-                            "Rendimento Annualizzato", 
-                            format_percentage(portfolio_metrics.get('Annualized Return', 0))
-                        )
-                        st.metric(
-                            "Volatilità Annualizzata",
-                            format_percentage(portfolio_metrics.get('Annualized Volatility', 0))
-                        )
-                        st.metric(
-                            "Sharpe Ratio",
-                            f"{portfolio_metrics.get('Sharpe Ratio', 0):.3f}"
-                        )
+                        # Calcola metriche benchmark se disponibile
+                        benchmark_metrics = {}
+                        if not benchmark_data.empty:
+                            benchmark_metrics = metrics_calc.calculate_all_metrics(benchmark_data['benchmark_returns'])
+                        
+                        # Mostra metriche comparative
+                        if benchmark_metrics:
+                            st.write("**Portfolio vs Benchmark:**")
+                            
+                            # Confronti diretti
+                            portfolio_return = portfolio_metrics.get('Total Return', 0)
+                            benchmark_return = benchmark_metrics.get('Total Return', 0)
+                            excess_return = portfolio_return - benchmark_return
+                            
+                            st.metric(
+                                "Rendimento Totale",
+                                format_percentage(portfolio_return),
+                                delta=format_percentage(excess_return)
+                            )
+                            
+                            portfolio_sharpe = portfolio_metrics.get('Sharpe Ratio', 0)
+                            benchmark_sharpe = benchmark_metrics.get('Sharpe Ratio', 0)
+                            sharpe_diff = portfolio_sharpe - benchmark_sharpe
+                            
+                            st.metric(
+                                "Sharpe Ratio",
+                                f"{portfolio_sharpe:.3f}",
+                                delta=f"{sharpe_diff:+.3f}"
+                            )
+                            
+                            portfolio_vol = portfolio_metrics.get('Annualized Volatility', 0)
+                            benchmark_vol = benchmark_metrics.get('Annualized Volatility', 0)
+                            vol_diff = portfolio_vol - benchmark_vol
+                            
+                            st.metric(
+                                "Volatilità Annua",
+                                format_percentage(portfolio_vol),
+                                delta=format_percentage(vol_diff)
+                            )
+                            
+                            # Information Ratio
+                            if benchmark_metrics:
+                                excess_returns = backtest_data['portfolio_returns'] - benchmark_data['benchmark_returns']
+                                info_ratio = excess_returns.mean() / excess_returns.std() * np.sqrt(252) if excess_returns.std() > 0 else 0
+                                
+                                st.metric(
+                                    "Information Ratio",
+                                    f"{info_ratio:.3f}",
+                                    help="Rendimento attivo / Tracking Error"
+                                )
+                        else:
+                            # Metriche solo portfolio se non c'è benchmark
+                            st.metric(
+                                "Rendimento Totale",
+                                format_percentage(portfolio_metrics.get('Total Return', 0))
+                            )
+                            st.metric(
+                                "Rendimento Annualizzato", 
+                                format_percentage(portfolio_metrics.get('Annualized Return', 0))
+                            )
+                            st.metric(
+                                "Volatilità Annualizzata",
+                                format_percentage(portfolio_metrics.get('Annualized Volatility', 0))
+                            )
+                            st.metric(
+                                "Sharpe Ratio",
+                                f"{portfolio_metrics.get('Sharpe Ratio', 0):.3f}"
+                            )
                 
                 # Grafico drawdown
                 st.subheader("Analisi Drawdown")
@@ -535,6 +618,10 @@ def main():
             if st.session_state.portfolio_results:
                 backtest_data = st.session_state.portfolio_results['backtest']
                 
+                # Determina se il benchmark è disponibile
+                show_benchmark = ('benchmark' in st.session_state.portfolio_results and 
+                                not st.session_state.portfolio_results['benchmark'].empty)
+                
                 if not backtest_data.empty:
                     metrics_calc = PerformanceMetrics()
                     portfolio_metrics = metrics_calc.calculate_all_metrics(backtest_data['portfolio_returns'])
@@ -558,6 +645,120 @@ def main():
                         
                         for key, value in portfolio_summary.items():
                             st.write(f"• **{key}:** {value}")
+                    
+                    # Sezione benchmark se abilitato
+                    if show_benchmark and 'benchmark' in st.session_state.portfolio_results:
+                        benchmark_data = st.session_state.portfolio_results['benchmark']
+                        
+                        st.write("---")
+                        st.subheader("Composizione Benchmark (SWDA + XEON)")
+                        
+                        col_bench1, col_bench2 = st.columns(2)
+                        
+                        with col_bench1:
+                            # Pesi del benchmark
+                            benchmark_weights_dict = st.session_state.portfolio_results.get('benchmark_weights', {})
+                            if benchmark_weights_dict:
+                                # Converti il dizionario in pandas Series
+                                benchmark_weights = pd.Series(benchmark_weights_dict)
+                                
+                                benchmark_df = pd.DataFrame({
+                                    'Asset': benchmark_weights.index,
+                                    'Peso (%)': (benchmark_weights.values * 100).round(2)
+                                })
+                                st.dataframe(benchmark_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("Nessun peso benchmark disponibile")
+                        
+                        with col_bench2:
+                            # Grafico a torta del benchmark
+                            benchmark_weights_dict = st.session_state.portfolio_results.get('benchmark_weights', {})
+                            if benchmark_weights_dict:
+                                # Converti il dizionario in pandas Series per il grafico
+                                benchmark_weights = pd.Series(benchmark_weights_dict)
+                                benchmark_fig = create_weights_pie_chart(
+                                    benchmark_weights, 
+                                    f"Benchmark Portfolio (Cash {cash_target:.0f}%)"
+                                )
+                                st.plotly_chart(benchmark_fig, use_container_width=True)
+                    
+                    # Distribuzione dei rendimenti
+                    st.write("---")
+                    st.subheader("Distribuzione Rendimenti Giornalieri")
+                    
+                    col_dist1, col_dist2 = st.columns(2)
+                    
+                    with col_dist1:
+                        # Istogramma dei rendimenti
+                        fig_hist = go.Figure()
+                        
+                        # Istogramma del portfolio
+                        fig_hist.add_trace(go.Histogram(
+                            x=backtest_data['portfolio_returns'] * 100,
+                            nbinsx=50,
+                            name='Portfolio',
+                            opacity=0.7,
+                            marker_color='blue'
+                        ))
+                        
+                        # Aggiungi benchmark se disponibile
+                        if show_benchmark and 'benchmark' in st.session_state.portfolio_results:
+                            benchmark_data = st.session_state.portfolio_results['benchmark']
+                            if not benchmark_data.empty:
+                                fig_hist.add_trace(go.Histogram(
+                                    x=benchmark_data['benchmark_returns'] * 100,
+                                    nbinsx=50,
+                                    name='Benchmark',
+                                    opacity=0.7,
+                                    marker_color='red'
+                                ))
+                        
+                        fig_hist.update_layout(
+                            title="Distribuzione Rendimenti (%)",
+                            xaxis_title="Rendimento Giornaliero (%)",
+                            yaxis_title="Frequenza",
+                            barmode='overlay',
+                            template='plotly_white'
+                        )
+                        
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                    
+                    with col_dist2:
+                        # Statistiche comparative
+                        st.write("**Statistiche Rendimenti:**")
+                        
+                        # Calcola statistiche portfolio
+                        portfolio_returns_pct = backtest_data['portfolio_returns'] * 100
+                        
+                        stats_data = {
+                            'Portfolio': {
+                                'Media (%)': f"{portfolio_returns_pct.mean():.3f}",
+                                'Mediana (%)': f"{portfolio_returns_pct.median():.3f}",
+                                'Std Dev (%)': f"{portfolio_returns_pct.std():.3f}",
+                                'Skewness': f"{portfolio_returns_pct.skew():.3f}",
+                                'Kurtosis': f"{portfolio_returns_pct.kurtosis():.3f}",
+                                'Min (%)': f"{portfolio_returns_pct.min():.2f}",
+                                'Max (%)': f"{portfolio_returns_pct.max():.2f}"
+                            }
+                        }
+                        
+                        # Aggiungi statistiche benchmark se disponibile
+                        if show_benchmark and 'benchmark' in st.session_state.portfolio_results:
+                            benchmark_data = st.session_state.portfolio_results['benchmark']
+                            if not benchmark_data.empty:
+                                benchmark_returns_pct = benchmark_data['benchmark_returns'] * 100
+                                stats_data['Benchmark'] = {
+                                    'Media (%)': f"{benchmark_returns_pct.mean():.3f}",
+                                    'Mediana (%)': f"{benchmark_returns_pct.median():.3f}",
+                                    'Std Dev (%)': f"{benchmark_returns_pct.std():.3f}",
+                                    'Skewness': f"{benchmark_returns_pct.skew():.3f}",
+                                    'Kurtosis': f"{benchmark_returns_pct.kurtosis():.3f}",
+                                    'Min (%)': f"{benchmark_returns_pct.min():.2f}",
+                                    'Max (%)': f"{benchmark_returns_pct.max():.2f}"
+                                }
+                        
+                        stats_df = pd.DataFrame(stats_data)
+                        st.dataframe(stats_df, use_container_width=True)
                     
                     # Metriche rolling
                     st.subheader("Metriche Rolling (1 Anno)")
