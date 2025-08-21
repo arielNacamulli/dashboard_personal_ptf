@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 from src.data_loader import ETFDataLoader
 from src.portfolio_optimizer import PortfolioOptimizer
 from src.metrics import PerformanceMetrics
-from src.config import get_etf_symbols, get_etf_info
+from src.config import get_etf_symbols, get_etf_info, get_investment_symbols, get_cash_asset
 from src.utils import (
     create_performance_chart, create_weights_pie_chart, create_drawdown_chart,
     create_correlation_heatmap, create_weights_evolution_chart, create_metrics_table,
@@ -205,7 +205,7 @@ def main():
                             rebalance_freq=rebalance_freq
                         )
                         
-                        # Ottieni i pesi più recenti
+                        # Ottieni i pesi più recenti con cash calcolato
                         latest_weights = optimizer.get_latest_weights()
                         
                         # Salva i risultati
@@ -217,6 +217,7 @@ def main():
                             'rebalance_freq': rebalance_freq
                         }
                         st.session_state.current_weights = latest_weights
+                        st.session_state.manual_weights = latest_weights  # Inizializza pesi manuali
                         
                         st.success(f"✅ Ottimizzazione {algorithm} completata!")
                         
@@ -307,6 +308,144 @@ def main():
                         last_rebalance = st.session_state.portfolio_results['rebalance_dates'][-1]
                         st.info(f"📅 Ultimo ribilanciamento: {last_rebalance.strftime('%Y-%m-%d')}")
                 
+                # Sezione modifica manuale pesi
+                st.subheader("🔧 Modifica Manuale Pesi")
+                
+                cash_asset = get_cash_asset()
+                investment_symbols = get_investment_symbols()
+                
+                # Inizializza i pesi modificabili nello stato
+                if 'manual_weights' not in st.session_state:
+                    st.session_state.manual_weights = st.session_state.current_weights.copy()
+                
+                # Colonne per gli input dei pesi
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Modifica Allocazione (%):**")
+                    
+                    # Input per ogni asset da investimento (esclude cash)
+                    manual_weights = {}
+                    total_manual = 0.0
+                    
+                    for symbol in investment_symbols.keys():
+                        if symbol in st.session_state.current_weights.index:
+                            current_weight = st.session_state.manual_weights.get(symbol, 0.0) * 100
+                            
+                            new_weight = st.number_input(
+                                f"{symbol} - {investment_symbols[symbol]}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(current_weight),
+                                step=0.1,
+                                key=f"weight_{symbol}",
+                                help=f"Peso per {symbol} (0-100%)"
+                            )
+                            
+                            manual_weights[symbol] = new_weight / 100.0
+                            total_manual += new_weight / 100.0
+                    
+                    # Calcola automaticamente il peso del cash
+                    cash_weight = max(0.0, 1.0 - total_manual)
+                    
+                    # Mostra il peso del cash (non modificabile)
+                    st.number_input(
+                        f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Auto)",
+                        value=float(cash_weight * 100),
+                        disabled=True,
+                        help="Peso calcolato automaticamente come residuo"
+                    )
+                
+                with col2:
+                    # Riassunto delle modifiche
+                    st.write("**Riassunto Allocazione:**")
+                    
+                    # Verifica validità
+                    if total_manual > 1.0:
+                        st.error(f"⚠️ Attenzione: La somma degli investimenti supera il 100% ({total_manual*100:.1f}%)")
+                        st.write("I pesi verranno normalizzati automaticamente.")
+                    elif total_manual < 0.95:
+                        st.info(f"💰 Cash: {cash_weight*100:.1f}% (Alto livello di liquidità)")
+                    else:
+                        st.success(f"✅ Allocazione valida - Cash: {cash_weight*100:.1f}%")
+                    
+                    # Mostra la ripartizione
+                    summary_data = []
+                    for symbol, weight in manual_weights.items():
+                        if weight > 0:
+                            summary_data.append({
+                                'Asset': symbol,
+                                'Peso (%)': f"{weight*100:.1f}%"
+                            })
+                    
+                    if cash_weight > 0:
+                        summary_data.append({
+                            'Asset': cash_asset + " (Cash)",
+                            'Peso (%)': f"{cash_weight*100:.1f}%"
+                        })
+                    
+                    if summary_data:
+                        summary_df = pd.DataFrame(summary_data)
+                        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                
+                # Pulsanti per applicare o resettare
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("✅ Applica Modifiche", use_container_width=True):
+                        # Crea la serie di pesi aggiornata
+                        new_weights = pd.Series(0.0, index=st.session_state.current_weights.index)
+                        
+                        # Assegna i pesi manuali
+                        for symbol, weight in manual_weights.items():
+                            new_weights[symbol] = weight
+                        
+                        # Usa l'optimizer per normalizzare e calcolare il cash
+                        if 'optimizer' not in locals():
+                            optimizer = PortfolioOptimizer()
+                        
+                        normalized_weights = optimizer.adjust_weights_with_cash(new_weights)
+                        
+                        # Aggiorna lo stato
+                        st.session_state.current_weights = normalized_weights
+                        st.session_state.manual_weights = normalized_weights
+                        
+                        st.success("✅ Pesi aggiornati con successo!")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("🔄 Reset Originali", use_container_width=True):
+                        # Ripristina i pesi originali dall'ottimizzazione
+                        if st.session_state.portfolio_results:
+                            optimizer = PortfolioOptimizer()
+                            optimizer.weights_history = st.session_state.portfolio_results['weights_history']
+                            original_weights = optimizer.get_latest_weights()
+                            
+                            st.session_state.current_weights = original_weights
+                            st.session_state.manual_weights = original_weights
+                            
+                            st.success("🔄 Pesi ripristinati ai valori ottimali!")
+                            st.rerun()
+                
+                with col3:
+                    # Pulsante download con pesi modificati
+                    if st.button("💾 Scarica Pesi Modificati", use_container_width=True):
+                        weights_export = {
+                            'Modified Weights': pd.DataFrame({
+                                'ETF': st.session_state.current_weights.index,
+                                'Weight': st.session_state.current_weights.values,
+                                'Weight (%)': (st.session_state.current_weights.values * 100).round(2)
+                            })
+                        }
+                        
+                        excel_data = export_to_excel(weights_export, "modified_portfolio_weights.xlsx")
+                        st.download_button(
+                            label="📊 Download Excel",
+                            data=excel_data,
+                            file_name="modified_portfolio_weights.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                
                 # Evoluzione pesi nel tempo
                 if st.session_state.portfolio_results:
                     st.subheader("Evoluzione Pesi nel Tempo")
@@ -314,25 +453,6 @@ def main():
                         st.session_state.portfolio_results['weights_history']
                     )
                     st.plotly_chart(fig_weights_evolution, use_container_width=True)
-                
-                # Pulsante per scaricare i pesi
-                col1, col2, col3 = st.columns([1, 1, 2])
-                with col1:
-                    if st.button("💾 Scarica Pesi", use_container_width=True):
-                        weights_export = {
-                            'Current Weights': pd.DataFrame({
-                                'ETF': st.session_state.current_weights.index,
-                                'Weight': st.session_state.current_weights.values
-                            })
-                        }
-                        
-                        excel_data = export_to_excel(weights_export, "portfolio_weights.xlsx")
-                        st.download_button(
-                            label="📊 Download Excel",
-                            data=excel_data,
-                            file_name="portfolio_weights.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
             else:
                 st.info("🎯 Esegui l'ottimizzazione per vedere l'allocazione del portfolio")
         

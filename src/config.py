@@ -15,6 +15,9 @@ ETF_SYMBOLS = {
     'XEON.MI': 'Xtrackers II EUR Overnight Rate Swap'
 }
 
+# Asset monetario di base (non da ottimizzare)
+CASH_ASSET = 'XEON.MI'
+
 # Informazioni dettagliate per la tabella informativa
 ETF_INFO = {
     'Simbolo': list(ETF_SYMBOLS.keys()),
@@ -28,13 +31,21 @@ ETF_INFO = {
         'Azionario Giappone',
         'Obbligazionario High Yield',
         'Azionario Emerging Markets',
-        'Obbligazionario Euro'
+        'Base Monetaria (Cash)'
     ]
 }
 
 def get_etf_symbols():
     """Restituisce il dizionario dei simboli ETF"""
     return ETF_SYMBOLS.copy()
+
+def get_investment_symbols():
+    """Restituisce solo gli ETF da investire (escludendo cash asset)"""
+    return {k: v for k, v in ETF_SYMBOLS.items() if k != CASH_ASSET}
+
+def get_cash_asset():
+    """Restituisce il simbolo dell'asset cash"""
+    return CASH_ASSET
 
 def get_etf_info():
     """Restituisce le informazioni dettagliate degli ETF"""

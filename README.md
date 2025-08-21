@@ -5,11 +5,14 @@ Una dashboard interattiva per l'analisi di portafoglio ETF con algoritmi HERC (H
 ## Caratteristiche
 
 - Download automatico di dati storici ETF da Yahoo Finance
-- Implementazione algoritmi HERC e HRP con ribilanciamento mensile
+- Implementazione algoritmi HERC e HRP con ribilanciamento configurabile
+- **XEON.MI come base monetaria**: Non incluso nell'ottimizzazione, utilizzato come cash per completare il portafoglio al 100%
+- **Modifica manuale dei pesi**: Possibilità di personalizzare l'allocazione ottimale
+- Calcolo automatico del peso cash per mantenere il portafoglio al 100%
 - Calcolo metriche di performance (rendimenti, volatilità, Sharpe ratio, drawdown)
 - Dashboard interattiva con Streamlit
 - Grafici interattivi e visualizzazioni
-- Export dei pesi ottimali
+- Export dei pesi ottimali e modificati
 
 ## ETF Supportati
 
@@ -20,7 +23,8 @@ Una dashboard interattiva per l'analisi di portafoglio ETF con algoritmi HERC (H
 - H50A.MI (HSBC EURO STOXX 50)
 - JPNA.MI (UBS Core MSCI Japan)
 - IS3K.DE (iShares Short Duration High Yield)
-- IEMB.L (iShares Core MSCI Emerging Markets)
+- AEME.PA (Amundi Index MSCI Emerging Markets)
+- XEON.MI (Xtrackers II EUR Overnight Rate Swap) - **Base Monetaria**
 
 ## Installazione
 
@@ -33,6 +37,22 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+### Workflow Consigliato
+
+1. **Selezione ETF**: Scegli gli ETF dalla sidebar (XEON.MI è sempre incluso come base monetaria)
+2. **Download Dati**: Seleziona il periodo e carica i dati storici
+3. **Ottimizzazione**: Scegli HERC o HRP e la frequenza di ribilanciamento
+4. **Analisi Risultati**: Esplora performance, metriche e correlazioni
+5. **Modifica Pesi** (Opzionale): Personalizza l'allocazione nel tab "Pesi Portfolio"
+6. **Export**: Scarica i pesi e i risultati dell'analisi
+
+### Gestione Base Monetaria
+
+- **XEON.MI** viene utilizzato come asset cash e non partecipa all'ottimizzazione
+- Il suo peso viene calcolato automaticamente come: `Cash = 100% - Σ(Altri Asset)`
+- Nella modifica manuale, il peso di XEON si aggiorna automaticamente
+- Se la somma degli altri asset supera il 100%, vengono normalizzati automaticamente
 
 ## Struttura del Progetto
 

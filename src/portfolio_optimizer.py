@@ -6,6 +6,7 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, dendrogram, cut_tree
 from scipy.spatial.distance import squareform
 from sklearn.covariance import LedoitWolf
+from .config import get_cash_asset
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -143,15 +144,27 @@ class PortfolioOptimizer:
     def hrp_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
         Implementa l'algoritmo HRP (Hierarchical Risk Parity)
+        Esclude l'asset cash dall'ottimizzazione
         
         Args:
             returns: DataFrame con i rendimenti degli asset
             
         Returns:
-            Serie con i pesi ottimali
+            Serie con i pesi ottimali (incluso cash asset)
         """
+        cash_asset = get_cash_asset()
+        
+        # Filtra solo gli asset da investire (esclude cash)
+        investment_returns = returns.drop(columns=[cash_asset], errors='ignore')
+        
+        if investment_returns.empty:
+            # Se non ci sono asset da investire, tutto in cash
+            weights = pd.Series(0.0, index=returns.columns)
+            weights[cash_asset] = 1.0
+            return weights
+        
         # Calcola la matrice di correlazione
-        correlation_matrix = returns.corr()
+        correlation_matrix = investment_returns.corr()
         
         # Gestisci valori NaN nella correlazione
         correlation_matrix = correlation_matrix.fillna(0)
@@ -163,29 +176,52 @@ class PortfolioOptimizer:
         linkage_matrix = self.hierarchical_clustering(distance_matrix)
         
         # Calcola la matrice di covarianza
-        covariance_matrix = returns.cov()
+        covariance_matrix = investment_returns.cov()
         
-        # Ottimizzazione ricorsiva
-        weights = self.recursive_bisection(linkage_matrix, covariance_matrix)
+        # Ottimizzazione ricorsiva solo sugli asset da investire
+        investment_weights = self.recursive_bisection(linkage_matrix, covariance_matrix)
         
-        # Normalizza i pesi
-        weights = weights / weights.sum()
+        # Normalizza i pesi degli investimenti
+        investment_weights = investment_weights / investment_weights.sum()
         
-        return pd.Series(weights, index=returns.columns)
+        # Crea i pesi finali includendo il cash asset
+        final_weights = pd.Series(0.0, index=returns.columns)
+        
+        # Assegna i pesi degli investimenti
+        for asset in investment_weights.index:
+            final_weights[asset] = investment_weights[asset]
+        
+        # Il cash asset riceve il peso residuo (0% per ora, sarà calcolato dopo)
+        if cash_asset in final_weights.index:
+            final_weights[cash_asset] = 0.0
+        
+        return final_weights
     
     def herc_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
         Implementa l'algoritmo HERC (Hierarchical Equal Risk Contribution)
+        Esclude l'asset cash dall'ottimizzazione
         
         Args:
             returns: DataFrame con i rendimenti degli asset
             
         Returns:
-            Serie con i pesi ottimali
+            Serie con i pesi ottimali (incluso cash asset)
         """
+        cash_asset = get_cash_asset()
+        
+        # Filtra solo gli asset da investire (esclude cash)
+        investment_returns = returns.drop(columns=[cash_asset], errors='ignore')
+        
+        if investment_returns.empty:
+            # Se non ci sono asset da investire, tutto in cash
+            weights = pd.Series(0.0, index=returns.columns)
+            weights[cash_asset] = 1.0
+            return weights
+        
         # Calcola la matrice di correlazione e covarianza
-        correlation_matrix = returns.corr().fillna(0)
-        covariance_matrix = returns.cov()
+        correlation_matrix = investment_returns.corr().fillna(0)
+        covariance_matrix = investment_returns.cov()
         
         # Calcola la matrice delle distanze
         distance_matrix = self.calculate_distance_matrix(correlation_matrix)
@@ -194,12 +230,23 @@ class PortfolioOptimizer:
         linkage_matrix = self.hierarchical_clustering(distance_matrix)
         
         # Implementa HERC con equal risk contribution
-        weights = self._herc_recursive_allocation(linkage_matrix, covariance_matrix, returns.columns.tolist())
+        investment_weights = self._herc_recursive_allocation(linkage_matrix, covariance_matrix, investment_returns.columns.tolist())
         
-        # Normalizza i pesi
-        weights = weights / weights.sum()
+        # Normalizza i pesi degli investimenti
+        investment_weights = investment_weights / investment_weights.sum()
         
-        return pd.Series(weights, index=returns.columns)
+        # Crea i pesi finali includendo il cash asset
+        final_weights = pd.Series(0.0, index=returns.columns)
+        
+        # Assegna i pesi degli investimenti
+        for i, asset in enumerate(investment_returns.columns):
+            final_weights[asset] = investment_weights[i]
+        
+        # Il cash asset riceve il peso residuo (0% per ora, sarà calcolato dopo)
+        if cash_asset in final_weights.index:
+            final_weights[cash_asset] = 0.0
+        
+        return final_weights
     
     def _herc_recursive_allocation(self, linkage_matrix: np.ndarray, covariance_matrix: pd.DataFrame, 
                                  assets: list) -> np.ndarray:
@@ -368,15 +415,70 @@ class PortfolioOptimizer:
             'cumulative_returns': np.cumprod(1 + np.array(portfolio_returns)) - 1
         }, index=all_dates)
     
+    def calculate_cash_weight(self, weights: pd.Series) -> pd.Series:
+        """
+        Calcola il peso del cash asset per completare il portafoglio al 100%
+        
+        Args:
+            weights: Serie con i pesi degli asset
+            
+        Returns:
+            Serie con i pesi aggiornati includendo il cash
+        """
+        cash_asset = get_cash_asset()
+        
+        # Calcola la somma dei pesi degli asset da investimento
+        investment_sum = weights.drop(cash_asset, errors='ignore').sum()
+        
+        # Il cash prende il peso residuo per arrivare al 100%
+        cash_weight = max(0.0, 1.0 - investment_sum)
+        
+        # Aggiorna i pesi
+        final_weights = weights.copy()
+        final_weights[cash_asset] = cash_weight
+        
+        return final_weights
+    
+    def adjust_weights_with_cash(self, weights: pd.Series) -> pd.Series:
+        """
+        Aggiusta i pesi considerando il cash asset
+        
+        Args:
+            weights: Serie con i pesi modificati dall'utente
+            
+        Returns:
+            Serie con i pesi normalizzati includendo il cash
+        """
+        cash_asset = get_cash_asset()
+        
+        # Filtra solo gli asset da investimento (esclude cash)
+        investment_weights = weights.drop(cash_asset, errors='ignore')
+        
+        # Se la somma degli investimenti supera il 100%, normalizza
+        investment_sum = investment_weights.sum()
+        if investment_sum > 1.0:
+            investment_weights = investment_weights / investment_sum
+        
+        # Calcola il peso del cash
+        cash_weight = max(0.0, 1.0 - investment_weights.sum())
+        
+        # Crea i pesi finali
+        final_weights = weights.copy()
+        final_weights[investment_weights.index] = investment_weights
+        final_weights[cash_asset] = cash_weight
+        
+        return final_weights
+    
     def get_latest_weights(self) -> pd.Series:
         """
-        Ottieni i pesi più recenti del portafoglio
+        Ottieni i pesi più recenti del portafoglio con cash calcolato
         
         Returns:
-            Serie con i pesi più recenti
+            Serie con i pesi più recenti includendo il cash
         """
         if self.weights_history:
-            return self.weights_history[-1]['weights']
+            weights = self.weights_history[-1]['weights']
+            return self.calculate_cash_weight(weights)
         return pd.Series()
     
     def get_rebalance_dates(self) -> list:
