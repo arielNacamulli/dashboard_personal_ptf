@@ -209,16 +209,45 @@ def main():
             # Configurazioni avanzate
             st.subheader("⚙️ Configurazioni Avanzate")
             
-            # Cash fisso
-            cash_target = st.slider(
-                f"Target Cash Fisso ({get_cash_asset()}):",
-                min_value=0.0,
-                max_value=50.0,
-                value=get_default_cash_target() * 100,
-                step=1.0,
-                format="%.0f%%",
-                help="Percentuale fissa di cash da mantenere ad ogni ribilanciamento"
-            ) / 100.0
+            # Modalità gestione cash
+            cash_mode = st.radio(
+                "Modalità Gestione Cash:",
+                ["Cash Fisso", "Volatilità Target"],
+                help="Cash Fisso: percentuale fissa di XEON. Volatilità Target: XEON variabile per raggiungere volatilità desiderata"
+            )
+            
+            if cash_mode == "Cash Fisso":
+                # Cash fisso
+                cash_target = st.slider(
+                    f"Target Cash Fisso ({get_cash_asset()}):",
+                    min_value=0.0,
+                    max_value=50.0,
+                    value=get_default_cash_target() * 100,
+                    step=1.0,
+                    format="%.0f%%",
+                    help="Percentuale fissa di cash da mantenere ad ogni ribilanciamento"
+                ) / 100.0
+                
+                use_volatility_target = False
+                target_volatility = None
+            else:
+                # Volatilità target
+                from src.config import DEFAULT_TARGET_VOLATILITY
+                
+                target_volatility = st.slider(
+                    "Volatilità Target Annua:",
+                    min_value=1.0,
+                    max_value=20.0,
+                    value=DEFAULT_TARGET_VOLATILITY * 100,
+                    step=0.5,
+                    format="%.1f%%",
+                    help="Volatilità annua target - XEON sarà usato per raggiungere questo obiettivo"
+                ) / 100.0
+                
+                use_volatility_target = True
+                cash_target = get_default_cash_target()  # Fallback value
+                
+                st.info(f"🎯 Con volatilità target {target_volatility*100:.1f}%, il peso di XEON varierà automaticamente ad ogni ribilanciamento")
             
             # Massima esposizione
             max_exposure = st.slider(
@@ -241,7 +270,9 @@ def main():
                         # Crea optimizer con i nuovi parametri
                         optimizer = PortfolioOptimizer(
                             cash_target=cash_target,
-                            max_exposure=max_exposure
+                            max_exposure=max_exposure,
+                            use_volatility_target=use_volatility_target,
+                            target_volatility=target_volatility
                         )
                         
                         # Esegui backtest con benchmark
@@ -264,6 +295,8 @@ def main():
                             'rebalance_freq': rebalance_freq,
                             'cash_target': cash_target,
                             'max_exposure': max_exposure,
+                            'use_volatility_target': use_volatility_target,
+                            'target_volatility': target_volatility,
                             'benchmark_weights': backtest_results['benchmark_weights']
                         }
                         st.session_state.current_weights = latest_weights
@@ -441,7 +474,15 @@ def main():
                         max_exposure = st.session_state.portfolio_results.get('max_exposure', 1.0)
                         
                         st.info(f"📅 Ultimo ribilanciamento: {last_rebalance.strftime('%Y-%m-%d')}")
-                        st.info(f"💰 Cash fisso: {cash_target*100:.1f}% | 📊 Max esposizione: {max_exposure*100:.1f}%")
+                        
+                        # Mostra info diverse in base alla modalità
+                        use_vol_target = st.session_state.portfolio_results.get('use_volatility_target', False)
+                        target_vol = st.session_state.portfolio_results.get('target_volatility', None)
+                        
+                        if use_vol_target and target_vol:
+                            st.info(f"🎯 Volatilità target: {target_vol*100:.1f}% | 📊 Max esposizione: {max_exposure*100:.1f}%")
+                        else:
+                            st.info(f"💰 Cash fisso: {cash_target*100:.1f}% | 📊 Max esposizione: {max_exposure*100:.1f}%")
                 
                 # Sezione modifica manuale pesi
                 st.subheader("🔧 Modifica Manuale Pesi")
@@ -457,10 +498,21 @@ def main():
                 if 'manual_weights' not in st.session_state:
                     st.session_state.manual_weights = st.session_state.current_weights.copy()
                 
-                # Informazioni sui vincoli attivi
-                st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
+                # Recupera i parametri dell'ottimizzazione
+                current_cash_target = st.session_state.portfolio_results.get('cash_target', get_default_cash_target())
+                current_max_exposure = st.session_state.portfolio_results.get('max_exposure', get_default_max_exposure())
+                use_volatility_target = st.session_state.portfolio_results.get('use_volatility_target', False)
+                target_volatility = st.session_state.portfolio_results.get('target_volatility', None)
                 
-                # Colonne per gli input dei pesi
+                if 'manual_weights' not in st.session_state:
+                    st.session_state.manual_weights = st.session_state.current_weights.copy()
+                
+                # Informazioni sui vincoli attivi
+                if use_volatility_target and target_volatility:
+                    st.info(f"🎯 Volatilità target: {target_volatility*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
+                    st.warning("⚠️ Con volatilità target, il peso di XEON varia automaticamente ad ogni ribilanciamento e non può essere modificato manualmente.")
+                else:
+                    st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")                # Colonne per gli input dei pesi
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -469,7 +521,15 @@ def main():
                     # Input per ogni asset da investimento (esclude cash)
                     manual_weights = {}
                     total_manual = 0.0
-                    available_for_investment = 1.0 - current_cash_target
+                    # Calcola spazio disponibile per investimenti
+                    if use_volatility_target:
+                        # Con volatilità target, lo spazio varia dinamicamente
+                        current_xeon_weight = st.session_state.current_weights.get(cash_asset, 0.0)
+                        available_for_investment = 1.0 - current_xeon_weight
+                        st.info(f"💡 Spazio attuale per investimenti: {available_for_investment*100:.1f}% (XEON: {current_xeon_weight*100:.1f}%)")
+                    else:
+                        # Cash fisso
+                        available_for_investment = 1.0 - current_cash_target
                     
                     for symbol in investment_symbols.keys():
                         if symbol in st.session_state.current_weights.index:
@@ -496,13 +556,25 @@ def main():
                             manual_weights[symbol] = new_weight / 100.0
                             total_manual += new_weight / 100.0
                     
-                    # Mostra il peso del cash fisso (non modificabile)
-                    st.number_input(
-                        f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Fisso)",
-                        value=float(current_cash_target * 100),
-                        disabled=True,
-                        help=f"Peso fisso del cash impostato a {current_cash_target*100:.1f}%"
-                    )
+                    # Mostra il peso del cash in base alla modalità
+                    if use_volatility_target and target_volatility:
+                        # Modalità volatilità target - XEON variabile
+                        current_xeon_weight = st.session_state.current_weights.get(cash_asset, 0.0)
+                        st.number_input(
+                            f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Variabile)",
+                            value=float(current_xeon_weight * 100),
+                            disabled=True,
+                            help=f"Peso variabile del cash per raggiungere volatilità target {target_volatility*100:.1f}%"
+                        )
+                        st.caption("⚡ Il peso di XEON varia automaticamente in base alla volatilità target")
+                    else:
+                        # Modalità cash fisso
+                        st.number_input(
+                            f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Fisso)",
+                            value=float(current_cash_target * 100),
+                            disabled=True,
+                            help=f"Peso fisso del cash impostato a {current_cash_target*100:.1f}%"
+                        )
                 
                 with col2:
                     # Riassunto delle modifiche
@@ -527,11 +599,18 @@ def main():
                                 'Peso (%)': f"{weight*100:.1f}%"
                             })
                     
-                    # Aggiungi sempre il cash fisso
-                    summary_data.append({
-                        'Asset': cash_asset + " (Fisso)",
-                        'Peso (%)': f"{current_cash_target*100:.1f}%"
-                    })
+                    # Aggiungi il cash (fisso o variabile) al riassunto
+                    if use_volatility_target and target_volatility:
+                        current_xeon_weight = st.session_state.current_weights.get(cash_asset, 0.0)
+                        summary_data.append({
+                            'Asset': cash_asset + " (Variabile)",
+                            'Peso (%)': f"{current_xeon_weight*100:.1f}%"
+                        })
+                    else:
+                        summary_data.append({
+                            'Asset': cash_asset + " (Fisso)",
+                            'Peso (%)': f"{current_cash_target*100:.1f}%"
+                        })
                     
                     if summary_data:
                         summary_df = pd.DataFrame(summary_data)
@@ -541,29 +620,41 @@ def main():
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    if st.button("✅ Applica Modifiche", use_container_width=True):
-                        # Crea la serie di pesi aggiornata
-                        new_weights = pd.Series(0.0, index=st.session_state.current_weights.index)
-                        
-                        # Assegna i pesi manuali
-                        for symbol, weight in manual_weights.items():
-                            new_weights[symbol] = weight
-                        
-                        # Crea optimizer con i parametri correnti
-                        optimizer = PortfolioOptimizer(
-                            cash_target=current_cash_target,
-                            max_exposure=current_max_exposure
+                    if use_volatility_target:
+                        # Con volatilità target, disabilita la modifica manuale dei pesi
+                        st.button(
+                            "✅ Applica Modifiche", 
+                            use_container_width=True,
+                            disabled=True,
+                            help="Non disponibile con volatilità target - i pesi vengono calcolati automaticamente"
                         )
-                        
-                        # Applica vincoli e normalizzazione
-                        normalized_weights = optimizer.adjust_weights_with_cash(new_weights, use_fixed_cash=True)
-                        
-                        # Aggiorna lo stato
-                        st.session_state.current_weights = normalized_weights
-                        st.session_state.manual_weights = normalized_weights
-                        
-                        st.success("✅ Pesi aggiornati con successo!")
-                        st.rerun()
+                        st.caption("⚠️ Con volatilità target attiva, i pesi non possono essere modificati manualmente")
+                    else:
+                        if st.button("✅ Applica Modifiche", use_container_width=True):
+                            # Crea la serie di pesi aggiornata
+                            new_weights = pd.Series(0.0, index=st.session_state.current_weights.index)
+                            
+                            # Assegna i pesi manuali
+                            for symbol, weight in manual_weights.items():
+                                new_weights[symbol] = weight
+                            
+                            # Crea optimizer con i parametri correnti
+                            optimizer = PortfolioOptimizer(
+                                cash_target=current_cash_target,
+                                max_exposure=current_max_exposure,
+                                use_volatility_target=use_volatility_target,
+                                target_volatility=target_volatility
+                            )
+                            
+                            # Applica vincoli e normalizzazione
+                            normalized_weights = optimizer.adjust_weights_with_cash(new_weights, use_fixed_cash=True)
+                            
+                            # Aggiorna lo stato
+                            st.session_state.current_weights = normalized_weights
+                            st.session_state.manual_weights = normalized_weights
+                            
+                            st.success("✅ Pesi aggiornati con successo!")
+                            st.rerun()
                 
                 with col2:
                     if st.button("🔄 Reset Originali", use_container_width=True):
@@ -572,7 +663,9 @@ def main():
                             # Crea optimizer con i parametri originali
                             optimizer = PortfolioOptimizer(
                                 cash_target=current_cash_target,
-                                max_exposure=current_max_exposure
+                                max_exposure=current_max_exposure,
+                                use_volatility_target=use_volatility_target,
+                                target_volatility=target_volatility
                             )
                             optimizer.weights_history = st.session_state.portfolio_results['weights_history']
                             original_weights = optimizer.get_latest_weights()
@@ -585,20 +678,23 @@ def main():
                 
                 with col3:
                     # Pulsante download con pesi modificati
-                    if st.button("💾 Scarica Pesi Modificati", use_container_width=True):
+                    download_label = "💾 Scarica Pesi Attuali" if use_volatility_target else "💾 Scarica Pesi Modificati"
+                    if st.button(download_label, use_container_width=True):
+                        mode_description = "Volatilità Target" if use_volatility_target else "Modified"
                         weights_export = {
-                            'Modified Weights': pd.DataFrame({
+                            f'{mode_description} Weights': pd.DataFrame({
                                 'ETF': st.session_state.current_weights.index,
                                 'Weight': st.session_state.current_weights.values,
                                 'Weight (%)': (st.session_state.current_weights.values * 100).round(2)
                             })
                         }
                         
-                        excel_data = export_to_excel(weights_export, "modified_portfolio_weights.xlsx")
+                        filename = f"volatility_target_weights.xlsx" if use_volatility_target else "modified_portfolio_weights.xlsx"
+                        excel_data = export_to_excel(weights_export, filename)
                         st.download_button(
                             label="📊 Download Excel",
                             data=excel_data,
-                            file_name="modified_portfolio_weights.xlsx",
+                            file_name=filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                 

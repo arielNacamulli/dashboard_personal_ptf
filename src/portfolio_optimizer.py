@@ -16,18 +16,26 @@ logger = logging.getLogger(__name__)
 class PortfolioOptimizer:
     """Classe per l'ottimizzazione del portafoglio con algoritmi gerarchici"""
     
-    def __init__(self, cash_target=None, max_exposure=None):
+    def __init__(self, cash_target=None, max_exposure=None, use_volatility_target=False, target_volatility=None):
         """
         Inizializza l'ottimizzatore con parametri opzionali
         
         Args:
             cash_target: Percentuale fissa di cash da mantenere (es. 0.10 per 10%)
             max_exposure: Massima esposizione per singolo ETF (es. 0.30 per 30%)
+            use_volatility_target: Se True, usa volatilità target invece di cash fisso
+            target_volatility: Volatilità target annua (es. 0.06 per 6%)
         """
+        from src.config import DEFAULT_TARGET_VOLATILITY
+        
         self.weights_history = {}
         self.rebalance_dates = []
         self.cash_target = cash_target if cash_target is not None else get_default_cash_target()
         self.max_exposure = max_exposure if max_exposure is not None else get_default_max_exposure()
+        
+        # Configurazione volatilità target
+        self.use_volatility_target = use_volatility_target
+        self.target_volatility = target_volatility if target_volatility is not None else DEFAULT_TARGET_VOLATILITY
         
     def calculate_distance_matrix(self, correlation_matrix: pd.DataFrame) -> np.ndarray:
         """
@@ -57,7 +65,71 @@ class PortfolioOptimizer:
         """
         # Converte in formato condensed per scipy
         condensed_distance = squareform(distance_matrix, checks=False)
-        return linkage(condensed_distance, method=method)
+        return linkage(distance_matrix, method='ward')
+    
+    def calculate_target_cash_weight(self, returns: pd.DataFrame, investment_weights: pd.Series, 
+                                   current_date: pd.Timestamp) -> float:
+        """
+        Calcola il peso del cash necessario per raggiungere la volatilità target
+        
+        Args:
+            returns: DataFrame con i rendimenti storici
+            investment_weights: Pesi degli asset di investimento (normalizzati, escluso cash)
+            current_date: Data corrente per il lookback
+            
+        Returns:
+            Peso del cash (0-1) per raggiungere la volatilità target
+        """
+        from src.config import VOLATILITY_LOOKBACK_DAYS
+        
+        cash_asset = get_cash_asset()
+        
+        # Trova l'indice della data corrente
+        available_dates = returns.index[returns.index <= current_date]
+        if len(available_dates) < VOLATILITY_LOOKBACK_DAYS:
+            # Se non ci sono abbastanza dati, usa tutto quello disponibile
+            lookback_start = available_dates[0]
+        else:
+            # Usa gli ultimi 252 giorni (1 anno)
+            lookback_start = available_dates[-VOLATILITY_LOOKBACK_DAYS]
+        
+        # Estrai dati del periodo di lookback
+        lookback_returns = returns.loc[lookback_start:current_date]
+        
+        # Filtra solo gli asset di investimento (escluso cash)
+        investment_returns = lookback_returns.drop(columns=[cash_asset], errors='ignore')
+        
+        # Calcola la volatilità del portfolio di investimento
+        if investment_returns.empty or investment_weights.empty:
+            return self.cash_target  # Fallback al cash target fisso
+        
+        # Assicurati che i pesi siano allineati con i rendimenti
+        aligned_weights = investment_weights.reindex(investment_returns.columns, fill_value=0)
+        aligned_weights = aligned_weights / aligned_weights.sum()  # Normalizza
+        
+        # Calcola la covarianza del portfolio di investimento
+        portfolio_returns = (investment_returns * aligned_weights).sum(axis=1)
+        portfolio_volatility = portfolio_returns.std() * np.sqrt(252)  # Annualizzata
+        
+        if portfolio_volatility <= 0:
+            return self.cash_target  # Fallback se volatilità zero
+        
+        # Calcola il peso necessario del portfolio di investimento per raggiungere target
+        # volatility_portfolio = weight_investment * volatility_investment
+        # target_volatility = weight_investment * portfolio_volatility
+        weight_investment = min(1.0, self.target_volatility / portfolio_volatility)
+        weight_cash = 1.0 - weight_investment
+        
+        # Assicura che il cash non sia negativo
+        weight_cash = max(0.0, weight_cash)
+        
+        print(f"📊 Volatilità Target Calculation ({current_date.strftime('%Y-%m-%d')}):")
+        print(f"   Portfolio volatility: {portfolio_volatility*100:.2f}%")
+        print(f"   Target volatility: {self.target_volatility*100:.2f}%")
+        print(f"   Investment weight: {weight_investment*100:.2f}%")
+        print(f"   Cash weight: {weight_cash*100:.2f}%")
+        
+        return weight_cash
     
     def get_cluster_variance(self, covariance_matrix: pd.DataFrame, cluster_items: list) -> float:
         """
@@ -153,19 +225,39 @@ class PortfolioOptimizer:
         
         return clusters
     
-    def apply_exposure_constraints(self, weights: pd.Series) -> pd.Series:
+    def apply_exposure_constraints(self, weights: pd.Series, returns_data: pd.DataFrame = None, 
+                                 current_date: pd.Timestamp = None) -> pd.Series:
         """
         Applica i vincoli di massima esposizione agli ETF con algoritmo iterativo robusto
-        Include gestione speciale per SWDA come asset core
+        Include gestione speciale per SWDA come asset core e volatilità target
         
         Args:
             weights: Serie con i pesi degli asset
+            returns_data: DataFrame con i rendimenti (necessario per volatilità target)
+            current_date: Data corrente (necessaria per volatilità target)
             
         Returns:
             Serie con i pesi aggiustati secondo i vincoli
         """
         cash_asset = get_cash_asset()
         constrained_weights = weights.copy()
+        
+        # Determina il target di cash (fisso o basato su volatilità)
+        if self.use_volatility_target and returns_data is not None and current_date is not None:
+            # Estrai i pesi degli investimenti (senza cash) e normalizzali
+            investment_weights = constrained_weights.drop(cash_asset, errors='ignore')
+            if investment_weights.sum() > 0:
+                investment_weights = investment_weights / investment_weights.sum()
+                
+                # Calcola il peso del cash basato sulla volatilità target
+                target_cash_weight = self.calculate_target_cash_weight(
+                    returns_data, investment_weights, current_date
+                )
+            else:
+                target_cash_weight = self.cash_target
+        else:
+            # Usa cash fisso
+            target_cash_weight = self.cash_target
         
         # Peso minimo garantito per SWDA (asset core)
         from src.config import DEFAULT_SWDA_MIN_WEIGHT
@@ -248,7 +340,7 @@ class PortfolioOptimizer:
         
         # Calcola spazio investimenti e normalizza
         investment_sum = sum(constrained_weights[asset] for asset in investment_assets)
-        available_for_investment = 1.0 - self.cash_target
+        available_for_investment = 1.0 - target_cash_weight
         
         if investment_sum > available_for_investment + 1e-6:
             # Se la somma degli investimenti supera lo spazio disponibile, scala proporzionalmente
@@ -258,8 +350,8 @@ class PortfolioOptimizer:
             for asset in investment_assets:
                 constrained_weights[asset] *= scale_factor
         
-        # Imposta il cash
-        constrained_weights[cash_asset] = self.cash_target
+        # Imposta il cash (fisso o calcolato dinamicamente)
+        constrained_weights[cash_asset] = target_cash_weight
         
         # Verifica finale
         self._verify_constraints(constrained_weights, "apply_exposure_constraints")
@@ -515,8 +607,12 @@ class PortfolioOptimizer:
             else:
                 new_weights = self.hrp_optimization(optimization_returns)
             
-            # Applica vincoli di esposizione e cash fisso ad ogni ribilanciamento
-            new_weights = self.apply_exposure_constraints(new_weights)
+            # Applica vincoli di esposizione e cash fisso/volatilità target ad ogni ribilanciamento
+            new_weights = self.apply_exposure_constraints(
+                new_weights, 
+                returns_data=returns, 
+                current_date=rebalance_date
+            )
             
             # Verifica aggiuntiva per debug
             self._verify_constraints(new_weights, f"Backtest {rebalance_date.strftime('%Y-%m-%d')}")

@@ -23,6 +23,10 @@ DEFAULT_CASH_TARGET = 0.10  # 10% target di cash fisso
 DEFAULT_MAX_EXPOSURE = 0.30  # 30% massima esposizione per singolo ETF
 DEFAULT_SWDA_MIN_WEIGHT = 0.15  # 15% peso minimo per SWDA come asset core
 
+# Configurazione volatilità target
+DEFAULT_TARGET_VOLATILITY = 0.06  # 6% volatilità target annua
+VOLATILITY_LOOKBACK_DAYS = 252  # 1 anno di dati per calcolo volatilità
+
 # ETF esenti dal limite di massima esposizione
 EXPOSURE_EXEMPT_ETFS = ['SWDA.MI', 'XEON.MI']
 
