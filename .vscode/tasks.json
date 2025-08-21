@@ -1,0 +1,13 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Streamlit Dashboard",
+			"type": "shell",
+			"command": "/Users/arielnacamulli/Codici/dashboard_personal_ptf/.venv/bin/python -m streamlit run app.py",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
