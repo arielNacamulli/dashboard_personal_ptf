@@ -13,7 +13,8 @@ warnings.filterwarnings('ignore')
 from src.data_loader import ETFDataLoader
 from src.portfolio_optimizer import PortfolioOptimizer
 from src.metrics import PerformanceMetrics
-from src.config import get_etf_symbols, get_etf_info, get_investment_symbols, get_cash_asset
+from src.config import (get_etf_symbols, get_etf_info, get_investment_symbols, get_cash_asset,
+                      get_default_cash_target, get_default_max_exposure, is_exposure_exempt)
 from src.utils import (
     create_performance_chart, create_weights_pie_chart, create_drawdown_chart,
     create_correlation_heatmap, create_weights_evolution_chart, create_metrics_table,
@@ -121,14 +122,17 @@ def main():
         st.subheader("Periodo di Analisi")
         period = st.selectbox(
             "Seleziona periodo:",
-            options=['1y', '2y', '3y', '5y', 'max'],
-            index=3,
+            options=['1y', '2y', '3y', '5y', '10y', '15y', '20y', 'max'],
+            index=6,  # Default a 15y
             format_func=lambda x: {
                 '1y': '1 Anno',
                 '2y': '2 Anni', 
                 '3y': '3 Anni',
                 '5y': '5 Anni',
-                'max': 'Massimo disponibile'
+                '10y': '10 Anni',
+                '15y': '15 Anni',
+                '20y': '20 Anni',
+                'max': 'Massimo disponibile (dal lancio dell\'ETF)'
             }[x]
         )
         
@@ -157,7 +161,17 @@ def main():
                                 st.write(f"• Periodo: {summary['start_date']} - {summary['end_date']}")
                                 st.write(f"• Osservazioni: {summary['num_observations']}")
                                 st.write(f"• ETF: {summary['num_assets']}")
-                                st.write(f"• Completezza: {summary['completeness']}")
+                                st.write(f"• Completezza globale: {summary['completeness']}")
+                                
+                                # Mostra ETF problematici se presenti
+                                if summary['problematic_etfs']:
+                                    st.warning("⚠️ **ETF con dati incompleti:**")
+                                    for etf_info in summary['problematic_etfs']:
+                                        st.write(f"• **{etf_info['symbol']}** ({etf_info['name']}): {etf_info['completeness']} completo, primo dato: {etf_info['first_date']}")
+                                    
+                                    st.info("💡 Suggerimento: Considera di rimuovere gli ETF con completezza molto bassa o utilizzare un periodo più recente.")
+                                else:
+                                    st.success("✅ Tutti gli ETF hanno dati sufficienti per l'analisi")
                             else:
                                 st.error(f"❌ Errore validazione dati: {message}")
                         else:
@@ -192,11 +206,43 @@ def main():
                 }[x]
             )
             
+            # Configurazioni avanzate
+            st.subheader("⚙️ Configurazioni Avanzate")
+            
+            # Cash fisso
+            cash_target = st.slider(
+                f"Target Cash Fisso ({get_cash_asset()}):",
+                min_value=0.0,
+                max_value=50.0,
+                value=get_default_cash_target() * 100,
+                step=1.0,
+                format="%.0f%%",
+                help="Percentuale fissa di cash da mantenere ad ogni ribilanciamento"
+            ) / 100.0
+            
+            # Massima esposizione
+            max_exposure = st.slider(
+                "Massima Esposizione per ETF:",
+                min_value=10.0,
+                max_value=100.0,
+                value=get_default_max_exposure() * 100,
+                step=1.0,
+                format="%.0f%%",
+                help="Limite massimo di allocazione per singolo ETF (esclude SWDA e XEON)"
+            ) / 100.0
+            
+            # Mostra ETF esenti
+            st.info(f"📋 ETF esenti dal limite: SWDA.MI, {get_cash_asset()}")
+            
             # Pulsante per ottimizzare
             if st.button("🎯 Ottimizza Portfolio", use_container_width=True):
                 with st.spinner("Ottimizzazione in corso..."):
                     try:
-                        optimizer = PortfolioOptimizer()
+                        # Crea optimizer con i nuovi parametri
+                        optimizer = PortfolioOptimizer(
+                            cash_target=cash_target,
+                            max_exposure=max_exposure
+                        )
                         
                         # Esegui backtest
                         portfolio_results = optimizer.backtest_portfolio(
@@ -214,7 +260,9 @@ def main():
                             'weights_history': optimizer.weights_history,
                             'rebalance_dates': optimizer.get_rebalance_dates(),
                             'algorithm': algorithm,
-                            'rebalance_freq': rebalance_freq
+                            'rebalance_freq': rebalance_freq,
+                            'cash_target': cash_target,
+                            'max_exposure': max_exposure
                         }
                         st.session_state.current_weights = latest_weights
                         st.session_state.manual_weights = latest_weights  # Inizializza pesi manuali
@@ -306,7 +354,11 @@ def main():
                     # Data ultimo ribilanciamento
                     if st.session_state.portfolio_results:
                         last_rebalance = st.session_state.portfolio_results['rebalance_dates'][-1]
+                        cash_target = st.session_state.portfolio_results.get('cash_target', 0.0)
+                        max_exposure = st.session_state.portfolio_results.get('max_exposure', 1.0)
+                        
                         st.info(f"📅 Ultimo ribilanciamento: {last_rebalance.strftime('%Y-%m-%d')}")
+                        st.info(f"💰 Cash fisso: {cash_target*100:.1f}% | 📊 Max esposizione: {max_exposure*100:.1f}%")
                 
                 # Sezione modifica manuale pesi
                 st.subheader("🔧 Modifica Manuale Pesi")
@@ -314,9 +366,16 @@ def main():
                 cash_asset = get_cash_asset()
                 investment_symbols = get_investment_symbols()
                 
+                # Ottieni i parametri correnti dall'ottimizzazione
+                current_cash_target = st.session_state.portfolio_results.get('cash_target', get_default_cash_target())
+                current_max_exposure = st.session_state.portfolio_results.get('max_exposure', get_default_max_exposure())
+                
                 # Inizializza i pesi modificabili nello stato
                 if 'manual_weights' not in st.session_state:
                     st.session_state.manual_weights = st.session_state.current_weights.copy()
+                
+                # Informazioni sui vincoli attivi
+                st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
                 
                 # Colonne per gli input dei pesi
                 col1, col2 = st.columns(2)
@@ -327,47 +386,54 @@ def main():
                     # Input per ogni asset da investimento (esclude cash)
                     manual_weights = {}
                     total_manual = 0.0
+                    available_for_investment = 1.0 - current_cash_target
                     
                     for symbol in investment_symbols.keys():
                         if symbol in st.session_state.current_weights.index:
                             current_weight = st.session_state.manual_weights.get(symbol, 0.0) * 100
                             
+                            # Determina il limite massimo per questo ETF
+                            if is_exposure_exempt(symbol):
+                                max_weight_pct = available_for_investment * 100  # Può prendere tutto lo spazio disponibile
+                                help_text = f"Peso per {symbol} (0-{max_weight_pct:.1f}% - ETF esente dal limite)"
+                            else:
+                                max_weight_pct = current_max_exposure * 100
+                                help_text = f"Peso per {symbol} (0-{max_weight_pct:.1f}% - limite massimo applicato)"
+                            
                             new_weight = st.number_input(
                                 f"{symbol} - {investment_symbols[symbol]}",
                                 min_value=0.0,
-                                max_value=100.0,
-                                value=float(current_weight),
+                                max_value=max_weight_pct,
+                                value=float(min(current_weight, max_weight_pct)),
                                 step=0.1,
                                 key=f"weight_{symbol}",
-                                help=f"Peso per {symbol} (0-100%)"
+                                help=help_text
                             )
                             
                             manual_weights[symbol] = new_weight / 100.0
                             total_manual += new_weight / 100.0
                     
-                    # Calcola automaticamente il peso del cash
-                    cash_weight = max(0.0, 1.0 - total_manual)
-                    
-                    # Mostra il peso del cash (non modificabile)
+                    # Mostra il peso del cash fisso (non modificabile)
                     st.number_input(
-                        f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Auto)",
-                        value=float(cash_weight * 100),
+                        f"{cash_asset} - {get_etf_symbols()[cash_asset]} (Fisso)",
+                        value=float(current_cash_target * 100),
                         disabled=True,
-                        help="Peso calcolato automaticamente come residuo"
+                        help=f"Peso fisso del cash impostato a {current_cash_target*100:.1f}%"
                     )
                 
                 with col2:
                     # Riassunto delle modifiche
                     st.write("**Riassunto Allocazione:**")
                     
-                    # Verifica validità
-                    if total_manual > 1.0:
-                        st.error(f"⚠️ Attenzione: La somma degli investimenti supera il 100% ({total_manual*100:.1f}%)")
+                    # Verifica validità rispetto allo spazio disponibile
+                    if total_manual > available_for_investment:
+                        st.error(f"⚠️ Attenzione: Gli investimenti superano lo spazio disponibile ({total_manual*100:.1f}% > {available_for_investment*100:.1f}%)")
                         st.write("I pesi verranno normalizzati automaticamente.")
-                    elif total_manual < 0.95:
-                        st.info(f"💰 Cash: {cash_weight*100:.1f}% (Alto livello di liquidità)")
+                    elif total_manual < available_for_investment * 0.80:  # Se usa meno dell'80% dello spazio
+                        remaining_space = available_for_investment - total_manual
+                        st.info(f"� Spazio rimanente: {remaining_space*100:.1f}% per altri investimenti")
                     else:
-                        st.success(f"✅ Allocazione valida - Cash: {cash_weight*100:.1f}%")
+                        st.success(f"✅ Allocazione valida - Investimenti: {total_manual*100:.1f}%")
                     
                     # Mostra la ripartizione
                     summary_data = []
@@ -378,11 +444,11 @@ def main():
                                 'Peso (%)': f"{weight*100:.1f}%"
                             })
                     
-                    if cash_weight > 0:
-                        summary_data.append({
-                            'Asset': cash_asset + " (Cash)",
-                            'Peso (%)': f"{cash_weight*100:.1f}%"
-                        })
+                    # Aggiungi sempre il cash fisso
+                    summary_data.append({
+                        'Asset': cash_asset + " (Fisso)",
+                        'Peso (%)': f"{current_cash_target*100:.1f}%"
+                    })
                     
                     if summary_data:
                         summary_df = pd.DataFrame(summary_data)
@@ -400,11 +466,14 @@ def main():
                         for symbol, weight in manual_weights.items():
                             new_weights[symbol] = weight
                         
-                        # Usa l'optimizer per normalizzare e calcolare il cash
-                        if 'optimizer' not in locals():
-                            optimizer = PortfolioOptimizer()
+                        # Crea optimizer con i parametri correnti
+                        optimizer = PortfolioOptimizer(
+                            cash_target=current_cash_target,
+                            max_exposure=current_max_exposure
+                        )
                         
-                        normalized_weights = optimizer.adjust_weights_with_cash(new_weights)
+                        # Applica vincoli e normalizzazione
+                        normalized_weights = optimizer.adjust_weights_with_cash(new_weights, use_fixed_cash=True)
                         
                         # Aggiorna lo stato
                         st.session_state.current_weights = normalized_weights
@@ -417,7 +486,11 @@ def main():
                     if st.button("🔄 Reset Originali", use_container_width=True):
                         # Ripristina i pesi originali dall'ottimizzazione
                         if st.session_state.portfolio_results:
-                            optimizer = PortfolioOptimizer()
+                            # Crea optimizer con i parametri originali
+                            optimizer = PortfolioOptimizer(
+                                cash_target=current_cash_target,
+                                max_exposure=current_max_exposure
+                            )
                             optimizer.weights_history = st.session_state.portfolio_results['weights_history']
                             original_weights = optimizer.get_latest_weights()
                             

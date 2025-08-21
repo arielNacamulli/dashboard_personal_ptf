@@ -5,7 +5,22 @@ Una dashboard interattiva per l'analisi di portafoglio ETF con algoritmi HERC (H
 ## Caratteristiche
 
 - Download automatico di dati storici ETF da Yahoo Finance
-- Implementazione algoritmi HERC e HRP con ribilanciamento configurabile
+
+### Features Implementate:
+
+- ✅ Real-time ETF data download from Yahoo Finance
+- ✅ HERC (Hierarchical Equal Risk Contribution) algorithm
+- ✅ HRP (Hierarchical Risk Parity) algorithm
+- ✅ Interactive Streamlit dashboard
+- ✅ Performance metrics calculation
+- ✅ Risk analysis and drawdown charts
+- ✅ Portfolio weights visualization
+- ✅ Data export functionality
+- ✅ Professional UI with minimal design
+- ✅ **Cash fisso**: Mantenimento percentuale fissa di XEON ad ogni ribilanciamento
+- ✅ **Massima esposizione**: Limite superiore per singolo ETF (esclusi SWDA e XEON)
+- ✅ **Walk-forward backtest**: Implementazione senza look-ahead bias
+- ✅ **Modifica manuale pesi**: Interfaccia per personalizzare l'allocazione
 - **XEON.MI come base monetaria**: Non incluso nell'ottimizzazione, utilizzato come cash per completare il portafoglio al 100%
 - **Modifica manuale dei pesi**: Possibilità di personalizzare l'allocazione ottimale
 - Calcolo automatico del peso cash per mantenere il portafoglio al 100%

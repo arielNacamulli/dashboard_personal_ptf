@@ -6,16 +6,25 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, dendrogram, cut_tree
 from scipy.spatial.distance import squareform
 from sklearn.covariance import LedoitWolf
-from .config import get_cash_asset
+from .config import get_cash_asset, get_default_cash_target, get_default_max_exposure, is_exposure_exempt
 import warnings
 warnings.filterwarnings('ignore')
 
 class PortfolioOptimizer:
     """Classe per l'ottimizzazione del portafoglio con algoritmi gerarchici"""
     
-    def __init__(self):
+    def __init__(self, cash_target=None, max_exposure=None):
+        """
+        Inizializza l'ottimizzatore con parametri opzionali
+        
+        Args:
+            cash_target: Percentuale fissa di cash da mantenere (es. 0.10 per 10%)
+            max_exposure: Massima esposizione per singolo ETF (es. 0.30 per 30%)
+        """
         self.weights_history = {}
         self.rebalance_dates = []
+        self.cash_target = cash_target if cash_target is not None else get_default_cash_target()
+        self.max_exposure = max_exposure if max_exposure is not None else get_default_max_exposure()
         
     def calculate_distance_matrix(self, correlation_matrix: pd.DataFrame) -> np.ndarray:
         """
@@ -141,10 +150,49 @@ class PortfolioOptimizer:
         
         return clusters
     
+    def apply_exposure_constraints(self, weights: pd.Series) -> pd.Series:
+        """
+        Applica i vincoli di massima esposizione agli ETF
+        
+        Args:
+            weights: Serie con i pesi degli asset
+            
+        Returns:
+            Serie con i pesi aggiustati secondo i vincoli
+        """
+        cash_asset = get_cash_asset()
+        constrained_weights = weights.copy()
+        
+        # Applica il vincolo di massima esposizione
+        for asset in constrained_weights.index:
+            if asset != cash_asset and not is_exposure_exempt(asset):
+                if constrained_weights[asset] > self.max_exposure:
+                    constrained_weights[asset] = self.max_exposure
+        
+        # Normalizza i pesi degli investimenti (escludendo cash)
+        investment_weights = constrained_weights.drop(cash_asset, errors='ignore')
+        investment_sum = investment_weights.sum()
+        
+        if investment_sum > 0:
+            # Calcola lo spazio disponibile per gli investimenti (1 - cash_target)
+            available_for_investment = 1.0 - self.cash_target
+            
+            # Normalizza i pesi degli investimenti per riempire lo spazio disponibile
+            normalized_investment_weights = investment_weights * (available_for_investment / investment_sum)
+            
+            # Aggiorna i pesi
+            for asset in normalized_investment_weights.index:
+                constrained_weights[asset] = normalized_investment_weights[asset]
+        
+        # Imposta il cash al target fisso
+        constrained_weights[cash_asset] = self.cash_target
+        
+        return constrained_weights
+    
     def hrp_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
         Implementa l'algoritmo HRP (Hierarchical Risk Parity)
-        Esclude l'asset cash dall'ottimizzazione
+        Con cash fisso e vincoli di massima esposizione
         
         Args:
             returns: DataFrame con i rendimenti degli asset
@@ -184,23 +232,22 @@ class PortfolioOptimizer:
         # Normalizza i pesi degli investimenti
         investment_weights = investment_weights / investment_weights.sum()
         
-        # Crea i pesi finali includendo il cash asset
+        # Crea i pesi iniziali
         final_weights = pd.Series(0.0, index=returns.columns)
         
-        # Assegna i pesi degli investimenti
+        # Assegna i pesi degli investimenti (senza cash)
         for asset in investment_weights.index:
             final_weights[asset] = investment_weights[asset]
         
-        # Il cash asset riceve il peso residuo (0% per ora, sarà calcolato dopo)
-        if cash_asset in final_weights.index:
-            final_weights[cash_asset] = 0.0
+        # Applica vincoli di esposizione e cash fisso
+        final_weights = self.apply_exposure_constraints(final_weights)
         
         return final_weights
     
     def herc_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
         Implementa l'algoritmo HERC (Hierarchical Equal Risk Contribution)
-        Esclude l'asset cash dall'ottimizzazione
+        Con cash fisso e vincoli di massima esposizione
         
         Args:
             returns: DataFrame con i rendimenti degli asset
@@ -235,16 +282,15 @@ class PortfolioOptimizer:
         # Normalizza i pesi degli investimenti
         investment_weights = investment_weights / investment_weights.sum()
         
-        # Crea i pesi finali includendo il cash asset
+        # Crea i pesi iniziali
         final_weights = pd.Series(0.0, index=returns.columns)
         
-        # Assegna i pesi degli investimenti
+        # Assegna i pesi degli investimenti (senza cash)
         for i, asset in enumerate(investment_returns.columns):
             final_weights[asset] = investment_weights[i]
         
-        # Il cash asset riceve il peso residuo (0% per ora, sarà calcolato dopo)
-        if cash_asset in final_weights.index:
-            final_weights[cash_asset] = 0.0
+        # Applica vincoli di esposizione e cash fisso
+        final_weights = self.apply_exposure_constraints(final_weights)
         
         return final_weights
     
@@ -439,35 +485,41 @@ class PortfolioOptimizer:
         
         return final_weights
     
-    def adjust_weights_with_cash(self, weights: pd.Series) -> pd.Series:
+    def adjust_weights_with_cash(self, weights: pd.Series, use_fixed_cash: bool = True) -> pd.Series:
         """
         Aggiusta i pesi considerando il cash asset
         
         Args:
             weights: Serie con i pesi modificati dall'utente
+            use_fixed_cash: Se utilizzare il cash fisso o calcolare automaticamente
             
         Returns:
             Serie con i pesi normalizzati includendo il cash
         """
         cash_asset = get_cash_asset()
         
-        # Filtra solo gli asset da investimento (esclude cash)
-        investment_weights = weights.drop(cash_asset, errors='ignore')
-        
-        # Se la somma degli investimenti supera il 100%, normalizza
-        investment_sum = investment_weights.sum()
-        if investment_sum > 1.0:
-            investment_weights = investment_weights / investment_sum
-        
-        # Calcola il peso del cash
-        cash_weight = max(0.0, 1.0 - investment_weights.sum())
-        
-        # Crea i pesi finali
-        final_weights = weights.copy()
-        final_weights[investment_weights.index] = investment_weights
-        final_weights[cash_asset] = cash_weight
-        
-        return final_weights
+        if use_fixed_cash:
+            # Utilizza il sistema di cash fisso e vincoli di esposizione
+            return self.apply_exposure_constraints(weights)
+        else:
+            # Sistema precedente per compatibilità
+            # Filtra solo gli asset da investimento (esclude cash)
+            investment_weights = weights.drop(cash_asset, errors='ignore')
+            
+            # Se la somma degli investimenti supera il 100%, normalizza
+            investment_sum = investment_weights.sum()
+            if investment_sum > 1.0:
+                investment_weights = investment_weights / investment_sum
+            
+            # Calcola il peso del cash
+            cash_weight = max(0.0, 1.0 - investment_weights.sum())
+            
+            # Crea i pesi finali
+            final_weights = weights.copy()
+            final_weights[investment_weights.index] = investment_weights
+            final_weights[cash_asset] = cash_weight
+            
+            return final_weights
     
     def get_latest_weights(self) -> pd.Series:
         """
