@@ -10,12 +10,15 @@ ETF_SYMBOLS = {
     'XUCD.DE': 'Xtrackers MSCI USA Consumer Discretionary',
     'CSSX5E.MI': 'iShares Core EURO STOXX 50',
     'SJPA.MI': 'iShares Core MSCI Japan',
+    'AEME.PA': 'Amundi Index MSCI Emerging Markets', 
+    'IUSN.DE': 'iShares MSCI World Small Cap',
     'IS3K.DE': 'iShares Short Duration High Yield',
-    'AEME.PA': 'Amundi Index MSCI Emerging Markets',
-        'SGLD.MI': 'Invesco Physical Gold',
+    'CSBGU7.MI': 'iShares Treasury Bond 3-7yr',
+    'ITPS.MI': 'iShares TIPS',
+    'SGLD.MI': 'Invesco Physical Gold',
+    'CMOD.MI': 'Invesco Bloomberg Commodity',
     '21BC.DE': '21Shares Bitcoin ETP',
     'XEON.MI': 'Xtrackers II EUR Overnight Rate Swap',
-
 }
 
 # Asset monetario di base (non da ottimizzare)
@@ -44,8 +47,12 @@ ETF_INFO = {
         'Azionario Consumer',
         'Azionario Europa',
         'Azionario Giappone',
-        'Obbligazionario High Yield',
         'Azionario Emerging Markets',
+        'Azionario Small Cap',
+        'Obbligazionario High Yield',
+        'Obbligazionario 3-7 anni',
+        'Obbligazionario Inflation Linked',
+        'Metalli Preziosi',
         'Materie Prime',
         'Criptovalute',
         'Base Monetaria (Cash)'
