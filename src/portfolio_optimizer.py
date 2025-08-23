@@ -322,17 +322,34 @@ class PortfolioOptimizer:
                         total_available_space += available_space
             
             # Ridistribuisci il peso in eccesso
-            if eligible_assets and total_available_space > 1e-8:
-                # Ridistribuisci proporzionalmente allo spazio disponibile
-                redistribution_ratio = min(1.0, total_violation / total_available_space)
+            if total_violation > 1e-8:
+                # PRIORITÀ 1: Prova a dare l'eccesso a SWDA (asset core, esente da limiti)
+                if 'SWDA.MI' in constrained_weights.index:
+                    # SWDA può assorbire tutto l'eccesso (essendo esente da limiti)
+                    constrained_weights['SWDA.MI'] += total_violation
+                    print(f"Peso in eccesso {total_violation:.6f} allocato a SWDA (asset core)")
+                    total_violation = 0.0
                 
-                for asset in eligible_assets:
-                    available_space = max(0.0, self.max_exposure - constrained_weights[asset])
-                    additional_weight = available_space * redistribution_ratio
-                    constrained_weights[asset] += additional_weight
+                # PRIORITÀ 2: Se SWDA non è disponibile, distribuzione tradizionale
+                elif eligible_assets and total_available_space > 1e-8:
+                    # Ridistribuisci proporzionalmente allo spazio disponibile
+                    redistribution_ratio = min(1.0, total_violation / total_available_space)
+                    
+                    for asset in eligible_assets:
+                        available_space = max(0.0, self.max_exposure - constrained_weights[asset])
+                        additional_weight = available_space * redistribution_ratio
+                        constrained_weights[asset] += additional_weight
+                    
+                    distributed_weight = min(total_violation, total_available_space)
+                    print(f"Peso in eccesso {distributed_weight:.6f} ridistribuito tra {len(eligible_assets)} asset")
+                    total_violation -= distributed_weight
+                
+                # PRIORITÀ 3: Solo come ultima risorsa va al cash
+                if total_violation > 1e-8:
+                    print(f"Peso in eccesso residuo {total_violation:.6f} allocato al cash")
+                    break
             else:
-                # Se non c'è spazio disponibile, il peso in eccesso va al cash
-                print(f"Peso in eccesso {total_violation:.6f} allocato al cash")
+                # Nessuna violazione, esci dal loop
                 break
         
         if iteration >= max_iterations - 1:
