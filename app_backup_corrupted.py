@@ -267,20 +267,12 @@ def main():
             if st.button("🎯 Ottimizza Portfolio", use_container_width=True):
                 with st.spinner("Ottimizzazione in corso..."):
                     try:
-                        # Inizializza i risk budgets se non esistono ancora (default uniforme)
-                        if 'risk_budgets' not in st.session_state:
-                            st.session_state.risk_budgets = {symbol: 1.0 for symbol in selected_etfs}
-                        
-                        # Usa i risk budget attuali se disponibili, altrimenti default uniforme
-                        current_risk_budgets = st.session_state.risk_budgets if st.session_state.risk_budgets else None
-                        
-                        # Crea optimizer con i nuovi parametri e risk budgets
+                        # Crea optimizer con i nuovi parametri
                         optimizer = PortfolioOptimizer(
                             cash_target=cash_target,
                             max_exposure=max_exposure,
                             use_volatility_target=use_volatility_target,
-                            target_volatility=target_volatility,
-                            risk_budgets=current_risk_budgets
+                            target_volatility=target_volatility
                         )
                         
                         # Esegui backtest con benchmark
@@ -319,13 +311,12 @@ def main():
     if st.session_state.data_loaded:
         
         # Tab per organizzare il contenuto
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Performance", "⚖️ Pesi Portfolio", "📊 Metriche", "🔍 Analisi", "🎯 Risk Budgeting"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 Performance", "⚖️ Pesi Portfolio", "📊 Metriche", "🔍 Analisi"])
         
         with tab1:
             st.subheader("Performance del Portfolio")
             
-            if (st.session_state.portfolio_results is not None and 
-                'backtest' in st.session_state.portfolio_results):
+            if st.session_state.portfolio_results:
                 results = st.session_state.portfolio_results
                 
                 # Grafico performance principale con benchmark
@@ -499,8 +490,7 @@ def main():
                     st.dataframe(weights_df, use_container_width=True)
                     
                     # Data ultimo ribilanciamento
-                    if (st.session_state.portfolio_results is not None and 
-                        'rebalance_dates' in st.session_state.portfolio_results):
+                    if st.session_state.portfolio_results:
                         last_rebalance = st.session_state.portfolio_results['rebalance_dates'][-1]
                         cash_target = st.session_state.portfolio_results.get('cash_target', 0.0)
                         max_exposure = st.session_state.portfolio_results.get('max_exposure', 1.0)
@@ -516,8 +506,8 @@ def main():
                         else:
                             st.info(f"💰 Cash fisso: {cash_target*100:.1f}% | 📊 Max esposizione: {max_exposure*100:.1f}%")
                 
-                # Sezione modifica manuale pesi
-                st.subheader("🔧 Modifica Manuale Pesi")
+                # Sezione Risk Budgeting per HERC
+                st.subheader("🎯 Risk Budgeting (HERC)")
                 
                 cash_asset = get_cash_asset()
                 investment_symbols = get_investment_symbols()
@@ -525,19 +515,8 @@ def main():
                 # Ottieni i parametri correnti dall'ottimizzazione
                 current_cash_target = st.session_state.portfolio_results.get('cash_target', get_default_cash_target())
                 current_max_exposure = st.session_state.portfolio_results.get('max_exposure', get_default_max_exposure())
-                
-                # Inizializza i pesi modificabili nello stato
-                if 'manual_weights' not in st.session_state:
-                    st.session_state.manual_weights = st.session_state.current_weights.copy()
-                
-                # Recupera i parametri dell'ottimizzazione
-                current_cash_target = st.session_state.portfolio_results.get('cash_target', get_default_cash_target())
-                current_max_exposure = st.session_state.portfolio_results.get('max_exposure', get_default_max_exposure())
                 use_volatility_target = st.session_state.portfolio_results.get('use_volatility_target', False)
                 target_volatility = st.session_state.portfolio_results.get('target_volatility', None)
-                
-                if 'manual_weights' not in st.session_state:
-                    st.session_state.manual_weights = st.session_state.current_weights.copy()
                 
                 # Inizializza i risk budgets nello stato
                 if 'risk_budgets' not in st.session_state:
@@ -547,53 +526,43 @@ def main():
                 # Informazioni sui vincoli attivi
                 if use_volatility_target and target_volatility:
                     st.info(f"🎯 Volatilità target: {target_volatility*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
-                    st.warning("⚠️ Con volatilità target, il peso di XEON varia automaticamente ad ogni ribilanciamento e non può essere modificato manualmente.")
                 else:
-                    st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")                # Colonne per gli input dei pesi
+                    st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}% | 📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
+                
+                st.write("💡 **Risk Budget**: Controlla quanto rischio allocare ad ogni ETF. Valori più alti = maggiore peso nell'allocazione.")
+                st.write("� XEON (cash) è escluso dal risk budgeting in quanto asset risk-free.")
+                
+                # Colonne per gli input dei risk budgets
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write("**Modifica Allocazione (%):**")
+                    st.write("**Risk Budget per ETF:**")
                     
                     # Input per ogni asset da investimento (esclude cash)
-                    manual_weights = {}
-                    total_manual = 0.0
-                    # Calcola spazio disponibile per investimenti
-                    if use_volatility_target:
-                        # Con volatilità target, lo spazio varia dinamicamente
-                        current_xeon_weight = st.session_state.current_weights.get(cash_asset, 0.0)
-                        available_for_investment = 1.0 - current_xeon_weight
-                        st.info(f"💡 Spazio attuale per investimenti: {available_for_investment*100:.1f}% (XEON: {current_xeon_weight*100:.1f}%)")
-                    else:
-                        # Cash fisso
-                        available_for_investment = 1.0 - current_cash_target
+                    risk_budgets = {}
+                    total_budget = 0.0
                     
                     for symbol in investment_symbols.keys():
-                        if symbol in st.session_state.current_weights.index:
-                            current_weight = st.session_state.manual_weights.get(symbol, 0.0) * 100
-                            
-                            # Determina il limite massimo per questo ETF
-                            if is_exposure_exempt(symbol):
-                                max_weight_pct = available_for_investment * 100  # Può prendere tutto lo spazio disponibile
-                                help_text = f"Peso per {symbol} (0-{max_weight_pct:.1f}% - ETF esente dal limite)"
-                            else:
-                                max_weight_pct = current_max_exposure * 100
-                                help_text = f"Peso per {symbol} (0-{max_weight_pct:.1f}% - limite massimo applicato)"
-                            
-                            new_weight = st.number_input(
-                                f"{symbol} - {investment_symbols[symbol]}",
-                                min_value=0.0,
-                                max_value=max_weight_pct,
-                                value=float(min(current_weight, max_weight_pct)),
-                                step=0.1,
-                                key=f"weight_{symbol}",
-                                help=help_text
-                            )
-                            
-                            manual_weights[symbol] = new_weight / 100.0
-                            total_manual += new_weight / 100.0
+                        etf_name = investment_symbols[symbol]
+                        current_budget = st.session_state.risk_budgets.get(symbol, 1.0)
+                        
+                        # Input slider per risk budget
+                        risk_budgets[symbol] = st.slider(
+                            f"**{symbol}** - {etf_name}",
+                            min_value=0.1,
+                            max_value=3.0,
+                            value=current_budget,
+                            step=0.1,
+                            format="%.1f",
+                            help=f"Budget di rischio per {symbol}. Default: 1.0 (uniforme)"
+                        )
+                        total_budget += risk_budgets[symbol]
+                    
+                    # Aggiorna i risk budgets nello stato
+                    st.session_state.risk_budgets = risk_budgets
                     
                     # Mostra il peso del cash in base alla modalità
+                    st.write("**Cash (XEON):**")
                     if use_volatility_target and target_volatility:
                         # Modalità volatilità target - XEON variabile
                         current_xeon_weight = st.session_state.current_weights.get(cash_asset, 0.0)
@@ -614,14 +583,54 @@ def main():
                         )
                 
                 with col2:
-                    # Riassunto delle modifiche
-                    st.write("**Riassunto Allocazione:**")
+                    # Riassunto dei Risk Budget
+                    st.write("**Riassunto Risk Budget:**")
                     
-                    # Verifica validità rispetto allo spazio disponibile
-                    if total_manual > available_for_investment + 1e-6:
-                        st.error(f"⚠️ Attenzione: Gli investimenti superano lo spazio disponibile ({total_manual*100:.1f}% > {available_for_investment*100:.1f}%)")
-                        st.write("I pesi verranno normalizzati automaticamente.")
-                    elif total_manual < available_for_investment * 0.80:  # Se usa meno dell'80% dello spazio
+                    # Normalizza i budget per mostrare la percentuale di rischio allocata
+                    normalized_budgets = {}
+                    total_budget = sum(risk_budgets.values())
+                    
+                    if total_budget > 0:
+                        for symbol, budget in risk_budgets.items():
+                            normalized_budgets[symbol] = (budget / total_budget) * 100
+                    
+                    # Mostra la distribuzione dei risk budget
+                    budget_data = []
+                    for symbol, budget_pct in normalized_budgets.items():
+                        budget_data.append({
+                            'Asset': symbol,
+                            'Risk Budget': f"{risk_budgets[symbol]:.1f}",
+                            'Rischio (%)': f"{budget_pct:.1f}%"
+                        })
+                    
+                    # Aggiungi XEON (escluso da risk budgeting)
+                    budget_data.append({
+                        'Asset': cash_asset,
+                        'Risk Budget': "N/A",
+                        'Rischio (%)': "Risk-free"
+                    })
+                    
+                    if budget_data:
+                        budget_df = pd.DataFrame(budget_data)
+                        st.dataframe(budget_df, use_container_width=True, hide_index=True)
+                    
+                    # Informazioni sui vincoli
+                    st.write("**Vincoli Attivi:**")
+                    if use_volatility_target and target_volatility:
+                        st.info(f"🎯 Volatilità target: {target_volatility*100:.1f}%")
+                        st.caption("I pesi verranno calcolati automaticamente per raggiungere la volatilità target")
+                    else:
+                        st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}%")
+                        st.caption("Il cash ha un peso fisso, i risk budget si applicano alla parte investita")
+                    
+                    st.info(f"📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
+                    st.caption("Gli ETF con esposizione > limite allocano l'eccesso a SWDA")
+                
+                # Pulsanti per gestire Risk Budget
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("🔄 Ricalcola HERC", use_container_width=True,
                         remaining_space = available_for_investment - total_manual
                         st.info(f"� Spazio rimanente: {remaining_space*100:.1f}% per altri investimenti")
                     else:
@@ -653,92 +662,74 @@ def main():
                         summary_df = pd.DataFrame(summary_data)
                         st.dataframe(summary_df, use_container_width=True, hide_index=True)
                 
-                # Pulsanti per applicare o resettare
+                # Pulsanti per gestire Risk Budget
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    if use_volatility_target:
-                        # Con volatilità target, disabilita la modifica manuale dei pesi
-                        st.button(
-                            "✅ Applica Modifiche", 
-                            use_container_width=True,
-                            disabled=True,
-                            help="Non disponibile con volatilità target - i pesi vengono calcolati automaticamente"
-                        )
-                        st.caption("⚠️ Con volatilità target attiva, i pesi non possono essere modificati manualmente")
-                    else:
-                        if st.button("✅ Applica Modifiche", use_container_width=True):
-                            # Crea la serie di pesi aggiornata
-                            new_weights = pd.Series(0.0, index=st.session_state.current_weights.index)
-                            
-                            # Assegna i pesi manuali
-                            for symbol, weight in manual_weights.items():
-                                new_weights[symbol] = weight
-                            
-                            # Crea optimizer con i parametri correnti
+                    if st.button("🔄 Ricalcola HERC", use_container_width=True, 
+                                help="Ricalcola l'ottimizzazione HERC con i nuovi Risk Budget"):
+                        # Aggiorna i risk budgets nello stato
+                        st.session_state.risk_budgets = risk_budgets
+                        
+                        # Verifica se abbiamo i dati necessari
+                        if st.session_state.portfolio_results and st.session_state.portfolio_results.get('returns') is not None:
+                            # Ricalcola con i nuovi risk budget
                             optimizer = PortfolioOptimizer(
                                 cash_target=current_cash_target,
                                 max_exposure=current_max_exposure,
                                 use_volatility_target=use_volatility_target,
-                                target_volatility=target_volatility
+                                target_volatility=target_volatility,
+                                risk_budgets=risk_budgets  # Passa i risk budget all'optimizer
                             )
                             
-                            # Applica vincoli e normalizzazione
-                            normalized_weights = optimizer.adjust_weights_with_cash(new_weights, use_fixed_cash=True)
+                            # Re-run HERC con i nuovi risk budget
+                            returns_data = st.session_state.portfolio_results['returns']
+                            results = optimizer.herc_optimization(returns_data.dropna())
                             
-                            # Aggiorna lo stato
-                            st.session_state.current_weights = normalized_weights
-                            st.session_state.manual_weights = normalized_weights
-                            
-                            st.success("✅ Pesi aggiornati con successo!")
-                            st.rerun()
+                            if results:
+                                # Aggiorna i risultati nello stato
+                                st.session_state.portfolio_results['weights_history'] = results['weights_history']
+                                st.session_state.current_weights = optimizer.get_latest_weights()
+                                
+                                st.success("✅ HERC ricalcolato con i nuovi Risk Budget!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Errore nel ricalcolo HERC")
+                        else:
+                            st.error("❌ Esegui prima l'ottimizzazione HERC per poter ricalcolare")
                 
                 with col2:
-                    if st.button("🔄 Reset Originali", use_container_width=True):
-                        # Ripristina i pesi originali dall'ottimizzazione
-                        if (st.session_state.portfolio_results is not None and 
-                            'algorithm' in st.session_state.portfolio_results):
-                            # Crea optimizer con i parametri originali
-                            optimizer = PortfolioOptimizer(
-                                cash_target=current_cash_target,
-                                max_exposure=current_max_exposure,
-                                use_volatility_target=use_volatility_target,
-                                target_volatility=target_volatility
-                            )
-                            optimizer.weights_history = st.session_state.portfolio_results['weights_history']
-                            original_weights = optimizer.get_latest_weights()
-                            
-                            st.session_state.current_weights = original_weights
-                            st.session_state.manual_weights = original_weights
-                            
-                            st.success("🔄 Pesi ripristinati ai valori ottimali!")
-                            st.rerun()
+                    if st.button("↩️ Reset Budget", use_container_width=True,
+                                help="Ripristina tutti i Risk Budget a 1.0 (allocazione uniforme)"):
+                        # Reset tutti i budget a 1.0
+                        st.session_state.risk_budgets = {symbol: 1.0 for symbol in investment_symbols.keys()}
+                        st.success("🔄 Risk Budget ripristinati!")
+                        st.rerun()
                 
                 with col3:
-                    # Pulsante download con pesi modificati
-                    download_label = "💾 Scarica Pesi Attuali" if use_volatility_target else "💾 Scarica Pesi Modificati"
-                    if st.button(download_label, use_container_width=True):
-                        mode_description = "Volatilità Target" if use_volatility_target else "Modified"
-                        weights_export = {
-                            f'{mode_description} Weights': pd.DataFrame({
-                                'ETF': st.session_state.current_weights.index,
-                                'Weight': st.session_state.current_weights.values,
-                                'Weight (%)': (st.session_state.current_weights.values * 100).round(2)
-                            })
-                        }
+                    if st.button("💾 Salva Budget", use_container_width=True,
+                                help="Salva la configurazione attuale dei Risk Budget"):
+                        # Esporta i risk budget attuali
+                        budget_export = pd.DataFrame([
+                            {
+                                'ETF': symbol,
+                                'Nome': investment_symbols[symbol],
+                                'Risk_Budget': budget,
+                                'Rischio_Pct': f"{(budget / sum(risk_budgets.values()) * 100):.1f}%"
+                            }
+                            for symbol, budget in risk_budgets.items()
+                        ])
                         
-                        filename = f"volatility_target_weights.xlsx" if use_volatility_target else "modified_portfolio_weights.xlsx"
-                        excel_data = export_to_excel(weights_export, filename)
+                        csv_data = budget_export.to_csv(index=False)
                         st.download_button(
-                            label="📊 Download Excel",
-                            data=excel_data,
-                            file_name=filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            label="📊 Download Risk Budget CSV",
+                            data=csv_data,
+                            file_name="risk_budgets_configuration.csv",
+                            mime="text/csv"
                         )
                 
                 # Evoluzione pesi nel tempo
-                if (st.session_state.portfolio_results is not None and 
-                    'weights_history' in st.session_state.portfolio_results):
+                if st.session_state.portfolio_results:
                     st.subheader("Evoluzione Pesi nel Tempo")
                     fig_weights_evolution = create_weights_evolution_chart(
                         st.session_state.portfolio_results['weights_history']
@@ -750,8 +741,7 @@ def main():
         with tab3:
             st.subheader("Metriche di Performance")
             
-            if (st.session_state.portfolio_results is not None and 
-                'backtest' in st.session_state.portfolio_results):
+            if st.session_state.portfolio_results:
                 backtest_data = st.session_state.portfolio_results['backtest']
                 
                 # Determina se il benchmark è disponibile
@@ -1044,171 +1034,6 @@ def main():
                 )
                 
                 st.plotly_chart(fig_scatter, use_container_width=True)
-        
-        with tab5:
-            st.subheader("🎯 Risk Budgeting")
-            
-            if (st.session_state.portfolio_results is not None and 
-                len(st.session_state.portfolio_results) > 0):
-                # Ottieni i simboli di investimento (escludi cash)
-                investment_symbols = {k: v for k, v in get_etf_symbols().items() if k != get_cash_asset()}
-                current_cash_target = st.session_state.portfolio_results.get('cash_target', get_default_cash_target())
-                current_max_exposure = st.session_state.portfolio_results.get('max_exposure', get_default_max_exposure())
-                use_volatility_target = st.session_state.portfolio_results.get('use_volatility_target', False)
-                target_volatility = st.session_state.portfolio_results.get('target_volatility', None)
-                cash_asset = get_cash_asset()
-                
-                st.write("💡 **Risk Budget**: Controlla quanto rischio allocare ad ogni ETF. Valori più alti = maggiore peso nell'allocazione.")
-                st.write(f"🔒 {cash_asset} (cash) è escluso dal risk budgeting in quanto asset risk-free.")
-                
-                # Colonne per i controlli
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**Risk Budget per ETF:**")
-                    
-                    # Input per ogni asset da investimento (esclude cash)
-                    risk_budgets = {}
-                    
-                    for symbol in investment_symbols.keys():
-                        etf_name = investment_symbols[symbol]
-                        current_budget = st.session_state.risk_budgets.get(symbol, 1.0)
-                        
-                        # Input slider per risk budget
-                        risk_budgets[symbol] = st.slider(
-                            f"**{symbol}** - {etf_name}",
-                            min_value=0.1,
-                            max_value=3.0,
-                            value=current_budget,
-                            step=0.1,
-                            format="%.1f",
-                            help=f"Budget di rischio per {symbol}. Default: 1.0 (uniforme)"
-                        )
-                    
-                    # Aggiorna i risk budgets nello stato
-                    st.session_state.risk_budgets = risk_budgets
-                
-                with col2:
-                    # Riassunto dei Risk Budget
-                    st.write("**Riassunto Risk Budget:**")
-                    
-                    # Normalizza i budget per mostrare la percentuale di rischio allocata
-                    total_budget = sum(risk_budgets.values())
-                    
-                    budget_data = []
-                    for symbol, budget in risk_budgets.items():
-                        budget_pct = (budget / total_budget) * 100 if total_budget > 0 else 0
-                        budget_data.append({
-                            'Asset': symbol,
-                            'Risk Budget': f"{budget:.1f}",
-                            'Rischio (%)': f"{budget_pct:.1f}%"
-                        })
-                    
-                    # Aggiungi XEON (escluso da risk budgeting)
-                    budget_data.append({
-                        'Asset': cash_asset,
-                        'Risk Budget': "N/A",
-                        'Rischio (%)': "Risk-free"
-                    })
-                    
-                    budget_df = pd.DataFrame(budget_data)
-                    st.dataframe(budget_df, use_container_width=True, hide_index=True)
-                    
-                    # Informazioni sui vincoli
-                    st.write("**Vincoli Attivi:**")
-                    if use_volatility_target and target_volatility:
-                        st.info(f"🎯 Volatilità target: {target_volatility*100:.1f}%")
-                        st.caption("I pesi verranno calcolati automaticamente per raggiungere la volatilità target")
-                    else:
-                        st.info(f"💰 Cash fisso: {current_cash_target*100:.1f}%")
-                        st.caption("Il cash ha un peso fisso, i risk budget si applicano alla parte investita")
-                    
-                    st.info(f"📊 Max esposizione: {current_max_exposure*100:.1f}% (eccetto SWDA e XEON)")
-                    st.caption("Gli ETF con esposizione > limite allocano l'eccesso a SWDA")
-                
-                # Pulsanti per gestire Risk Budget
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🔄 Ricalcola HERC", use_container_width=True, 
-                                help="Ricalcola l'ottimizzazione HERC con i nuovi Risk Budget"):
-                        # Verifica se abbiamo i dati necessari
-                        if (st.session_state.portfolio_results is not None and 
-                            'backtest' in st.session_state.portfolio_results and 
-                            not st.session_state.returns_data.empty):
-                            # Ricalcola con i nuovi risk budget
-                            optimizer = PortfolioOptimizer(
-                                cash_target=current_cash_target,
-                                max_exposure=current_max_exposure,
-                                use_volatility_target=use_volatility_target,
-                                target_volatility=target_volatility,
-                                risk_budgets=risk_budgets  # Passa i risk budget all'optimizer
-                            )
-                            
-                            # Esegui backtest completo con i nuovi risk budget
-                            algorithm = st.session_state.portfolio_results.get('algorithm', 'HERC')
-                            rebalance_freq = st.session_state.portfolio_results.get('rebalance_freq', 'monthly')
-                            
-                            try:
-                                backtest_results = optimizer.backtest_with_benchmark(
-                                    st.session_state.returns_data,
-                                    method=algorithm.lower(),
-                                    rebalance_freq=rebalance_freq
-                                )
-                                
-                                # Ottieni i pesi più recenti con cash calcolato
-                                latest_weights = optimizer.get_latest_weights()
-                                
-                                # Aggiorna tutti i risultati nello stato
-                                st.session_state.portfolio_results.update({
-                                    'backtest': backtest_results['portfolio'],
-                                    'benchmark': backtest_results['benchmark'],
-                                    'weights_history': optimizer.weights_history,
-                                    'rebalance_dates': optimizer.get_rebalance_dates(),
-                                    'benchmark_weights': backtest_results['benchmark_weights']
-                                })
-                                st.session_state.current_weights = latest_weights
-                                
-                                st.success("✅ HERC e backtest ricalcolati con i nuovi Risk Budget!")
-                                st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"❌ Errore nel ricalcolo: {str(e)}")
-                                st.write("Dettagli errore per debug:", e)
-                        else:
-                            st.error("❌ Esegui prima l'ottimizzazione HERC per poter ricalcolare")
-                
-                with col2:
-                    if st.button("↩️ Reset Budget", use_container_width=True,
-                                help="Ripristina tutti i Risk Budget a 1.0 (allocazione uniforme)"):
-                        # Reset tutti i budget a 1.0
-                        st.session_state.risk_budgets = {symbol: 1.0 for symbol in investment_symbols.keys()}
-                        st.success("🔄 Risk Budget ripristinati!")
-                        st.rerun()
-                
-                with col3:
-                    if st.button("💾 Salva Budget", use_container_width=True,
-                                help="Salva la configurazione attuale dei Risk Budget"):
-                        # Esporta i risk budget attuali
-                        budget_export = pd.DataFrame([
-                            {
-                                'ETF': symbol,
-                                'Nome': investment_symbols[symbol],
-                                'Risk_Budget': budget,
-                                'Rischio_Pct': f"{(budget / sum(risk_budgets.values()) * 100):.1f}%"
-                            }
-                            for symbol, budget in risk_budgets.items()
-                        ])
-                        
-                        csv_data = budget_export.to_csv(index=False)
-                        st.download_button(
-                            label="📊 Download Risk Budget CSV",
-                            data=csv_data,
-                            file_name="risk_budgets_configuration.csv",
-                            mime="text/csv"
-                        )
-            else:
-                st.info("🎯 Esegui l'ottimizzazione HERC per utilizzare il sistema Risk Budgeting")
     
     else:
         # Messaggio di benvenuto

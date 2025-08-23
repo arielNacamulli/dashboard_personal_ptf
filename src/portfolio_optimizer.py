@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class PortfolioOptimizer:
     """Classe per l'ottimizzazione del portafoglio con algoritmi gerarchici"""
     
-    def __init__(self, cash_target=None, max_exposure=None, use_volatility_target=False, target_volatility=None):
+    def __init__(self, cash_target=None, max_exposure=None, use_volatility_target=False, target_volatility=None, risk_budgets=None):
         """
         Inizializza l'ottimizzatore con parametri opzionali
         
@@ -25,6 +25,7 @@ class PortfolioOptimizer:
             max_exposure: Massima esposizione per singolo ETF (es. 0.30 per 30%)
             use_volatility_target: Se True, usa volatilità target invece di cash fisso
             target_volatility: Volatilità target annua (es. 0.06 per 6%)
+            risk_budgets: Dizionario con i budget di rischio per ogni ETF (es. {'SWDA.MI': 1.0, 'SPXS.MI': 0.5})
         """
         from src.config import DEFAULT_TARGET_VOLATILITY
         
@@ -36,6 +37,9 @@ class PortfolioOptimizer:
         # Configurazione volatilità target
         self.use_volatility_target = use_volatility_target
         self.target_volatility = target_volatility if target_volatility is not None else DEFAULT_TARGET_VOLATILITY
+        
+        # Configurazione risk budgeting
+        self.risk_budgets = risk_budgets if risk_budgets is not None else {}
         
     def calculate_distance_matrix(self, correlation_matrix: pd.DataFrame) -> np.ndarray:
         """
@@ -455,10 +459,10 @@ class PortfolioOptimizer:
         
         return final_weights
     
-    def herc_optimization(self, returns: pd.DataFrame) -> pd.Series:
+    def risk_budgeting_optimization(self, returns: pd.DataFrame) -> pd.Series:
         """
-        Implementa l'algoritmo HERC (Hierarchical Equal Risk Contribution)
-        Con cash fisso e vincoli di massima esposizione
+        Implementa l'algoritmo di Risk Budgeting con clustering gerarchico
+        Ogni ETF ha un budget di rischio personalizzabile
         
         Args:
             returns: DataFrame con i rendimenti degli asset
@@ -481,19 +485,34 @@ class PortfolioOptimizer:
         correlation_matrix = investment_returns.corr().fillna(0)
         covariance_matrix = investment_returns.cov()
         
-        # Calcola la matrice delle distanze
-        distance_matrix = self.calculate_distance_matrix(correlation_matrix)
+        # Crea risk budgets di default se non forniti
+        if not self.risk_budgets:
+            # Tutti gli asset hanno budget uguale (1.0)
+            self.risk_budgets = {asset: 1.0 for asset in investment_returns.columns}
         
-        # Clustering gerarchico
+        # Normalizza i risk budgets
+        total_budget = sum(self.risk_budgets.get(asset, 1.0) for asset in investment_returns.columns)
+        normalized_budgets = {asset: self.risk_budgets.get(asset, 1.0) / total_budget 
+                             for asset in investment_returns.columns}
+        
+        print(f"📊 Risk Budgets:")
+        for asset in investment_returns.columns:
+            budget_pct = normalized_budgets[asset] * 100
+            print(f"   {asset}: {budget_pct:.1f}%")
+        
+        # Calcola la matrice delle distanze per clustering
+        distance_matrix = self.calculate_distance_matrix(correlation_matrix)
         linkage_matrix = self.hierarchical_clustering(distance_matrix)
         
-        # Implementa HERC con equal risk contribution
-        investment_weights = self._herc_recursive_allocation(linkage_matrix, covariance_matrix, investment_returns.columns.tolist())
+        # Implementa Risk Budgeting con clustering gerarchico
+        investment_weights = self._risk_budgeting_recursive_allocation(
+            linkage_matrix, covariance_matrix, investment_returns.columns.tolist(), normalized_budgets
+        )
         
         # Normalizza i pesi degli investimenti
         investment_weights = investment_weights / investment_weights.sum()
         
-        # Crea i pesi iniziali
+        # Crea i pesi finali
         final_weights = pd.Series(0.0, index=returns.columns)
         
         # Assegna i pesi degli investimenti (senza cash)
@@ -503,6 +522,88 @@ class PortfolioOptimizer:
         # Il cash verrà impostato successivamente da apply_exposure_constraints
         if cash_asset in final_weights.index:
             final_weights[cash_asset] = 0.0
+        
+        return final_weights
+    
+    def _risk_budgeting_recursive_allocation(self, linkage_matrix: np.ndarray, covariance_matrix: pd.DataFrame, 
+                                           assets: list, risk_budgets: dict) -> np.ndarray:
+        """
+        Allocazione ricorsiva per Risk Budgeting con clustering gerarchico
+        
+        Args:
+            linkage_matrix: Matrice di linkage
+            covariance_matrix: Matrice di covarianza
+            assets: Lista degli asset
+            risk_budgets: Dizionario con i budget di rischio normalizzati
+            
+        Returns:
+            Array con i pesi
+        """
+        n_assets = len(assets)
+        weights = np.zeros(n_assets)
+        
+        if n_assets <= 1:
+            weights[0] = 1.0
+            return weights
+        
+        # Trova i cluster al livello superiore
+        clusters = cut_tree(linkage_matrix, n_clusters=2).flatten()
+        
+        # Separa gli asset in due cluster
+        cluster_0 = [i for i in range(n_assets) if clusters[i] == 0]
+        cluster_1 = [i for i in range(n_assets) if clusters[i] == 1]
+        
+        if len(cluster_0) == 0 or len(cluster_1) == 0:
+            # Se non possiamo dividere, alloca basato sui risk budgets
+            for i, asset in enumerate(assets):
+                weights[i] = risk_budgets.get(asset, 1.0 / n_assets)
+            return weights / weights.sum()
+        
+        # Calcola il budget di rischio totale per ogni cluster
+        budget_0 = sum(risk_budgets.get(assets[i], 1.0 / n_assets) for i in cluster_0)
+        budget_1 = sum(risk_budgets.get(assets[i], 1.0 / n_assets) for i in cluster_1)
+        total_budget = budget_0 + budget_1
+        
+        # Peso di ogni cluster basato sul risk budget
+        weight_0 = budget_0 / total_budget if total_budget > 0 else 0.5
+        weight_1 = budget_1 / total_budget if total_budget > 0 else 0.5
+        
+        # Ricorsione sui sottoclusters
+        if len(cluster_0) > 1:
+            sub_linkage_0 = self._extract_sublinkage(linkage_matrix, cluster_0)
+            sub_cov_0 = covariance_matrix.iloc[cluster_0, cluster_0]
+            sub_assets_0 = [assets[i] for i in cluster_0]
+            sub_weights_0 = self._risk_budgeting_recursive_allocation(sub_linkage_0, sub_cov_0, sub_assets_0, risk_budgets)
+            for i, idx in enumerate(cluster_0):
+                weights[idx] = weight_0 * sub_weights_0[i]
+        else:
+            weights[cluster_0[0]] = weight_0
+            
+        if len(cluster_1) > 1:
+            sub_linkage_1 = self._extract_sublinkage(linkage_matrix, cluster_1)
+            sub_cov_1 = covariance_matrix.iloc[cluster_1, cluster_1]
+            sub_assets_1 = [assets[i] for i in cluster_1]
+            sub_weights_1 = self._risk_budgeting_recursive_allocation(sub_linkage_1, sub_cov_1, sub_assets_1, risk_budgets)
+            for i, idx in enumerate(cluster_1):
+                weights[idx] = weight_1 * sub_weights_1[i]
+        else:
+            weights[cluster_1[0]] = weight_1
+            
+        return weights
+    
+    def herc_optimization(self, returns: pd.DataFrame) -> pd.Series:
+        """
+        Implementa l'algoritmo HERC con Risk Budgeting (ex Equal Risk Contribution)
+        Ora supporta budget di rischio personalizzabili per ogni ETF
+        
+        Args:
+            returns: DataFrame con i rendimenti degli asset
+            
+        Returns:
+            Serie con i pesi ottimali (incluso cash asset)
+        """
+        # HERC ora è Risk Budgeting con clustering gerarchico
+        return self.risk_budgeting_optimization(returns)
         
         return final_weights
     
